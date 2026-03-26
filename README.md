@@ -1,5 +1,12 @@
 # grobid-metadata-enricher
 
+## What this pipeline does (high level)
+- Runs Grobid + pdfalto, then uses an LLM to **re‑extract header metadata** (title/authors/affiliations) from layout lines.
+- Uses the LLM to **select the true abstract** from TEI + layout candidates, plus an OCR‑cleanup pass to improve noisy text.
+- **Translates and unions keywords** across languages using the LLM.
+- Adds **deterministic SciELO identifiers** (DOI + URL) from the record id.
+- Produces per‑document metrics and a root‑cause summary against OAI‑DC XML.
+
 A small pipeline that runs Grobid + pdfalto + LLM enrichment and evaluates against OAI-DC XML.
 
 ## Prerequisites
