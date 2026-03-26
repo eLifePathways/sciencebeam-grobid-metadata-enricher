@@ -36,6 +36,8 @@ Install pdfalto and ensure it is on PATH. Example path used in this repo:
 /Users/leon/bin/pdfalto
 ```
 
+You can choose which LLM cloud endpoint to use. We plan to support local vLLM deployments later, but for the benchmark here, use OpenAI.
+
 ### AOAI pool JSON
 This is a pool of endpoint configs; the runner round‑robins across them.
 
