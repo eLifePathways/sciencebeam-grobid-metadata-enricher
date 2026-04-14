@@ -10,14 +10,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .clients import (
+    DEFAULT_GROBID_URL,
+    DEFAULT_OPENAI_API_KEY,
+    DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_PDFALTO_BIN,
+    DEFAULT_POOL_PATH,
     AoaiPool,
     OpenAIClient,
-    DEFAULT_GROBID_URL,
-    DEFAULT_POOL_PATH,
-    DEFAULT_PDFALTO_BIN,
-    DEFAULT_OPENAI_API_KEY,
-    DEFAULT_OPENAI_MODEL,
-    DEFAULT_OPENAI_BASE_URL,
     run_grobid,
     run_pdfalto,
 )
@@ -58,9 +58,20 @@ ENGLISH_START_RE = re.compile(r"^\s*(abstract|the|this|we|in|a|an)\b", re.IGNORE
 ROMANCE_START_RE = re.compile(r"^\s*(resumo|resumen)[:\s]", re.IGNORECASE)
 WORD_RE = re.compile(r"[a-zA-ZáéíóúãõçñÁÉÍÓÚÃÕÇÑ]+")
 LANGUAGE_STOPWORDS = {
-    "en": {"the", "of", "and", "to", "in", "a", "is", "that", "for", "with", "as", "on", "are", "this", "was", "were", "be", "by", "it", "from", "or", "an", "which", "at"},
-    "pt": {"o", "a", "e", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "um", "uma", "para", "por", "com", "como", "que", "se", "ao", "aos", "às"},
-    "es": {"el", "la", "los", "las", "de", "y", "en", "a", "un", "una", "para", "por", "con", "como", "que", "se", "al", "del"},
+    "en": {
+        "the", "of", "and", "to", "in", "a", "is", "that", "for", "with",
+        "as", "on", "are", "this", "was", "were", "be", "by", "it", "from",
+        "or", "an", "which", "at",
+    },
+    "pt": {
+        "o", "a", "e", "de", "do", "da", "dos", "das", "em", "no", "na",
+        "nos", "nas", "um", "uma", "para", "por", "com", "como", "que", "se",
+        "ao", "aos", "às",
+    },
+    "es": {
+        "el", "la", "los", "las", "de", "y", "en", "a", "un", "una",
+        "para", "por", "con", "como", "que", "se", "al", "del",
+    },
 }
 SCIELO_RECORD_RE = re.compile(r"preprint_(\d+)$")
 SCIELO_VIEW_URL = "https://preprints.scielo.org/index.php/scielo/preprint/view/{id}"
@@ -738,7 +749,7 @@ def run_pipeline(settings: PipelineSettings) -> Dict[str, Any]:
 
     def chat(messages: List[Dict[str, str]], temperature: float = 0.0, max_tokens: int = 800) -> str:
         with semaphore:
-            return client.chat(messages, temperature=temperature, max_tokens=max_tokens)
+            return str(client.chat(messages, temperature=temperature, max_tokens=max_tokens))
 
     per_document: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
@@ -754,7 +765,9 @@ def run_pipeline(settings: PipelineSettings) -> Dict[str, Any]:
                 errors.append({"record_id": record_id, "error": str(error)})
 
     summary = aggregate_metrics(per_document)
-    (settings.output_dir / "metrics.json").write_text(json.dumps(summary, ensure_ascii=True, indent=2), encoding="utf-8")
+    (settings.output_dir / "metrics.json").write_text(
+        json.dumps(summary, ensure_ascii=True, indent=2), encoding="utf-8"
+    )
 
     with (settings.output_dir / "per_document.jsonl").open("w", encoding="utf-8") as handle:
         for row in per_document:
@@ -768,6 +781,8 @@ def run_pipeline(settings: PipelineSettings) -> Dict[str, Any]:
     )
 
     if errors:
-        (settings.output_dir / "errors.json").write_text(json.dumps(errors, ensure_ascii=True, indent=2), encoding="utf-8")
+        (settings.output_dir / "errors.json").write_text(
+            json.dumps(errors, ensure_ascii=True, indent=2), encoding="utf-8"
+        )
 
     return {"summary": summary, "errors": errors, "per_document": per_document}

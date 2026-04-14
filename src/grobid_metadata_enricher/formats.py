@@ -6,7 +6,7 @@ import random
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, cast
 
 ManifestRow = Dict[str, str]
 MetadataRecord = Dict[str, Any]
@@ -292,7 +292,7 @@ def extract_tei_abstracts(tei_path: Path) -> List[str]:
 def extract_json_from_text(text: str) -> Dict[str, Any]:
     text = text.strip()
     try:
-        return json.loads(text)
+        return cast(Dict[str, Any], json.loads(text))
     except Exception:
         pass
     decoder = json.JSONDecoder()

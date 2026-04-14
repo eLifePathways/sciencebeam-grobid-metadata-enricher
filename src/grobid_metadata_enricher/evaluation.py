@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 WORD_RE = re.compile(r"[A-Za-z0-9]+", re.UNICODE)
 
@@ -107,7 +107,8 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
     gold_keyword_groups = gold.get("keywords_groups") or {}
     if gold_keyword_groups:
         recalls = [keyword_recall(group, predicted_keywords) for group in gold_keyword_groups.values() if group]
-        metrics["keywords_recall"] = max(recalls) if recalls else keyword_recall(gold.get("keywords") or [], predicted_keywords)
+        fallback = keyword_recall(gold.get("keywords") or [], predicted_keywords)
+        metrics["keywords_recall"] = max(recalls) if recalls else fallback
     else:
         metrics["keywords_recall"] = keyword_recall(gold.get("keywords") or [], predicted_keywords)
 
@@ -172,7 +173,7 @@ def write_root_cause_report(
         lines.append(", ".join(present_metrics))
         lines.append("")
 
-    def examples(predicate, limit: int = 2) -> List[Dict[str, Any]]:
+    def examples(predicate: Callable[[Dict[str, Any]], bool], limit: int = 2) -> List[Dict[str, Any]]:
         matches: List[Dict[str, Any]] = []
         for row in per_document:
             if predicate(row):
@@ -193,7 +194,8 @@ def write_root_cause_report(
         lines.append("Root cause: missing or empty title output.")
         for row in missing_title:
             lines.append(
-                f"- {row['record_id']}: gold='{shorten(row['gold'].get('title', ''))}' pred='{shorten(row['pred'].get('title', ''))}'"
+                f"- {row['record_id']}: gold='{shorten(row['gold'].get('title', ''))}'"
+                f" pred='{shorten(row['pred'].get('title', ''))}'"
             )
     if long_title:
         lines.append("Root cause: title includes extra lines or disclaimer text.")
@@ -203,7 +205,8 @@ def write_root_cause_report(
         lines.append("Root cause: title truncated or incomplete.")
         for row in short_title:
             lines.append(
-                f"- {row['record_id']}: gold='{shorten(row['gold'].get('title', ''))}' pred='{shorten(row['pred'].get('title', ''))}'"
+                f"- {row['record_id']}: gold='{shorten(row['gold'].get('title', ''))}'"
+                f" pred='{shorten(row['pred'].get('title', ''))}'"
             )
     lines.append("")
 
@@ -239,7 +242,8 @@ def write_root_cause_report(
         lines.append("Root cause: abstract truncated.")
         for row in short_abstract:
             lines.append(
-                f"- {row['record_id']}: gold='{shorten(row['gold'].get('abstract', ''))}' pred='{shorten(row['pred'].get('abstract', ''))}'"
+                f"- {row['record_id']}: gold='{shorten(row['gold'].get('abstract', ''))}'"
+                f" pred='{shorten(row['pred'].get('abstract', ''))}'"
             )
     lines.append("")
 
@@ -266,7 +270,9 @@ def write_root_cause_report(
         lines.append("Root cause: metadata fields remain empty.")
         for row in metadata_gaps:
             lines.append(
-                f"- {row['record_id']}: publisher='{shorten(row['pred'].get('publisher', ''))}' date='{shorten(row['pred'].get('date', ''))}' rights='{shorten(row['pred'].get('rights', ''))}'"
+                f"- {row['record_id']}: publisher='{shorten(row['pred'].get('publisher', ''))}'"
+                f" date='{shorten(row['pred'].get('date', ''))}'"
+                f" rights='{shorten(row['pred'].get('rights', ''))}'"
             )
     lines.append("")
 
@@ -276,7 +282,8 @@ def write_root_cause_report(
         lines.append("Root cause: language code mismatch.")
         for row in language_mismatches:
             lines.append(
-                f"- {row['record_id']}: gold='{row['gold'].get('language', '')}' pred='{row['pred'].get('language', '')}'"
+                f"- {row['record_id']}: gold='{row['gold'].get('language', '')}'"
+                f" pred='{row['pred'].get('language', '')}'"
             )
     lines.append("")
 
@@ -286,7 +293,8 @@ def write_root_cause_report(
         lines.append("Root cause: identifiers missing or incomplete.")
         for row in missing_identifiers:
             lines.append(
-                f"- {row['record_id']}: gold={row['gold'].get('identifiers', [])} pred={row['pred'].get('identifiers', [])}"
+                f"- {row['record_id']}: gold={row['gold'].get('identifiers', [])}"
+                f" pred={row['pred'].get('identifiers', [])}"
             )
     lines.append("")
 

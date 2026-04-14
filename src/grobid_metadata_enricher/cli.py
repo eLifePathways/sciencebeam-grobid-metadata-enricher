@@ -5,11 +5,11 @@ from pathlib import Path
 
 from .clients import (
     DEFAULT_GROBID_URL,
-    DEFAULT_POOL_PATH,
-    DEFAULT_PDFALTO_BIN,
     DEFAULT_OPENAI_API_KEY,
-    DEFAULT_OPENAI_MODEL,
     DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_PDFALTO_BIN,
+    DEFAULT_POOL_PATH,
 )
 from .pipeline import PipelineSettings, run_pipeline
 
