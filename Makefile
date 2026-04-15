@@ -1,4 +1,4 @@
-.PHONY: install lint test serve serve-reload build start stop logs
+.PHONY: install lint format test serve serve-reload build start stop logs
 
 -include .env
 export
@@ -14,6 +14,10 @@ lint:
 	$(VENV)/bin/ruff check src/ tests/
 	$(VENV)/bin/mypy src/
 	$(VENV)/bin/pylint src/
+
+format:
+	$(VENV)/bin/ruff check --fix src/ tests/
+	$(VENV)/bin/ruff format src/ tests/
 
 test:
 	$(VENV)/bin/pytest tests/
