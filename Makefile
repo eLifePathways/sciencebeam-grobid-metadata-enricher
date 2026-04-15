@@ -1,6 +1,6 @@
 .PHONY: install lint test serve serve-reload build start stop logs
 
--include ../.env
+-include .env
 export
 
 VENV := .venv
