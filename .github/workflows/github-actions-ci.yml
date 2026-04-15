@@ -36,7 +36,7 @@ jobs:
       - name: Set tags
         id: set_tags
         run: |
-          DOCKER_IMAGE=ghcr.io/elifesciences/sciencebeam-grobid-metadata-enricher
+          DOCKER_IMAGE=ghcr.io/elifepathways/sciencebeam-grobid-metadata-enricher
           VERSION=""
           GIT_BRANCH=${GITHUB_BASE_REF:-${GITHUB_REF#refs/heads/}}
           SHORT_SHA=${GITHUB_SHA::8}
