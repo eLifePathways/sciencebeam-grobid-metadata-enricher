@@ -1,0 +1,23 @@
+services:
+  grobid:
+    image: lfoppiano/grobid:0.9.0-crf
+    ports:
+      - "8070:8070"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8070/api/isalive"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - GROBID_URL=http://grobid:8070/api
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL}
+    depends_on:
+      grobid:
+        condition: service_healthy
