@@ -8,6 +8,7 @@ from fastapi import APIRouter, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 
 from .clients import (
+    DEFAULT_GROBID_TIMEOUT,
     DEFAULT_GROBID_URL,
     DEFAULT_OPENAI_API_KEY,
     DEFAULT_OPENAI_BASE_URL,
@@ -29,6 +30,7 @@ app = FastAPI(
 )
 router = APIRouter(prefix="/api")
 _grobid_url: str = DEFAULT_GROBID_URL
+_grobid_timeout: int = DEFAULT_GROBID_TIMEOUT
 
 
 def _make_chat() -> Optional[Callable[..., str]]:
@@ -84,7 +86,7 @@ def grobid(
         pdf_path.write_bytes(file.file.read())
 
         try:
-            run_grobid(pdf_path, tei_path, grobid_url=_grobid_url)
+            run_grobid(pdf_path, tei_path, grobid_url=_grobid_url, timeout=_grobid_timeout)
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"GROBID processing failed: {exc}") from exc
 
@@ -115,7 +117,7 @@ def transform(
         pdf_path.write_bytes(file.file.read())
 
         try:
-            run_grobid(pdf_path, tei_path, grobid_url=_grobid_url)
+            run_grobid(pdf_path, tei_path, grobid_url=_grobid_url, timeout=_grobid_timeout)
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"GROBID processing failed: {exc}") from exc
 

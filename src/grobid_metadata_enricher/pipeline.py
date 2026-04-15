@@ -59,18 +59,76 @@ ROMANCE_START_RE = re.compile(r"^\s*(resumo|resumen)[:\s]", re.IGNORECASE)
 WORD_RE = re.compile(r"[a-zA-ZáéíóúãõçñÁÉÍÓÚÃÕÇÑ]+")
 LANGUAGE_STOPWORDS = {
     "en": {
-        "the", "of", "and", "to", "in", "a", "is", "that", "for", "with",
-        "as", "on", "are", "this", "was", "were", "be", "by", "it", "from",
-        "or", "an", "which", "at",
+        "the",
+        "of",
+        "and",
+        "to",
+        "in",
+        "a",
+        "is",
+        "that",
+        "for",
+        "with",
+        "as",
+        "on",
+        "are",
+        "this",
+        "was",
+        "were",
+        "be",
+        "by",
+        "it",
+        "from",
+        "or",
+        "an",
+        "which",
+        "at",
     },
     "pt": {
-        "o", "a", "e", "de", "do", "da", "dos", "das", "em", "no", "na",
-        "nos", "nas", "um", "uma", "para", "por", "com", "como", "que", "se",
-        "ao", "aos", "às",
+        "o",
+        "a",
+        "e",
+        "de",
+        "do",
+        "da",
+        "dos",
+        "das",
+        "em",
+        "no",
+        "na",
+        "nos",
+        "nas",
+        "um",
+        "uma",
+        "para",
+        "por",
+        "com",
+        "como",
+        "que",
+        "se",
+        "ao",
+        "aos",
+        "às",
     },
     "es": {
-        "el", "la", "los", "las", "de", "y", "en", "a", "un", "una",
-        "para", "por", "con", "como", "que", "se", "al", "del",
+        "el",
+        "la",
+        "los",
+        "las",
+        "de",
+        "y",
+        "en",
+        "a",
+        "un",
+        "una",
+        "para",
+        "por",
+        "con",
+        "como",
+        "que",
+        "se",
+        "al",
+        "del",
     },
 }
 SCIELO_RECORD_RE = re.compile(r"preprint_(\d+)$")
@@ -155,8 +213,7 @@ def build_document_context(paths: DocumentPaths) -> DocumentContext:
 
 def format_header_lines(lines: Sequence[LayoutLine]) -> str:
     return "\n".join(
-        f"{index + 1:02d} | y={line['y']:.1f} x={line['x']:.1f} | {line['text']}"
-        for index, line in enumerate(lines)
+        f"{index + 1:02d} | y={line['y']:.1f} x={line['x']:.1f} | {line['text']}" for index, line in enumerate(lines)
     )
 
 
@@ -308,8 +365,7 @@ def detect_language(text: str) -> str:
     if not tokens:
         return "unknown"
     scores = {
-        language: sum(token in stopwords for token in tokens)
-        for language, stopwords in LANGUAGE_STOPWORDS.items()
+        language: sum(token in stopwords for token in tokens) for language, stopwords in LANGUAGE_STOPWORDS.items()
     }
     best_language, best_score = max(scores.items(), key=lambda item: item[1])
     return best_language if best_score > 0 else "unknown"
@@ -319,10 +375,7 @@ def language_scores(text: str) -> Dict[str, int]:
     tokens = [token.lower() for token in WORD_RE.findall(text or "")]
     if not tokens:
         return {lang: 0 for lang in LANGUAGE_STOPWORDS}
-    return {
-        language: sum(token in stopwords for token in tokens)
-        for language, stopwords in LANGUAGE_STOPWORDS.items()
-    }
+    return {language: sum(token in stopwords for token in tokens) for language, stopwords in LANGUAGE_STOPWORDS.items()}
 
 
 def is_mixed_language(text: str) -> bool:
@@ -343,8 +396,6 @@ def canonical_language_code(language: str) -> str:
     if value in {"es", "spa"}:
         return "es"
     return value or "unknown"
-
-
 
 
 def split_title_candidates(title: str, preferred_language: Optional[str]) -> List[str]:

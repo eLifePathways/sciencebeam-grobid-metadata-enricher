@@ -184,9 +184,7 @@ def extract_oai_dc(xml_path: Path) -> MetadataRecord:
             if not element.text or not element.text.strip():
                 continue
             language = (
-                element.attrib.get("{http://www.w3.org/XML/1998/namespace}lang")
-                or element.attrib.get("lang")
-                or ""
+                element.attrib.get("{http://www.w3.org/XML/1998/namespace}lang") or element.attrib.get("lang") or ""
             )
             result.append((language, element.text.strip()))
         return result

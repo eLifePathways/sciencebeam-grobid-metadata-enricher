@@ -11,8 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import httpx
+
 DEFAULT_POOL_PATH = Path(os.getenv("AOAI_POOL_PATH", "aoai_pool.json"))
 DEFAULT_GROBID_URL = os.getenv("GROBID_URL", "http://localhost:8070/api")
+DEFAULT_GROBID_TIMEOUT = int(os.getenv("GROBID_TIMEOUT", "60"))
 DEFAULT_PDFALTO_BIN = Path(os.getenv("PDFALTO_BIN", "pdfalto"))
 DEFAULT_OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEFAULT_OPENAI_MODEL = os.getenv("OPENAI_MODEL")
@@ -90,12 +93,12 @@ class AoaiPool:
             except urllib.error.HTTPError as error:
                 last_error = error
                 if error.code in {429, 500, 502, 503, 504}:
-                    time.sleep(2 ** attempt)
+                    time.sleep(2**attempt)
                     continue
                 raise
             except Exception as error:
                 last_error = error
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
         raise RuntimeError(f"AOAI request failed after {max_attempts} attempts: {last_error}")
 
 
@@ -140,12 +143,12 @@ class OpenAIClient:
             except urllib.error.HTTPError as error:
                 last_error = error
                 if error.code in {429, 500, 502, 503, 504}:
-                    time.sleep(2 ** attempt)
+                    time.sleep(2**attempt)
                     continue
                 raise
             except Exception as error:
                 last_error = error
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
         raise RuntimeError(f"OpenAI request failed after {max_attempts} attempts: {last_error}")
 
 
@@ -166,26 +169,49 @@ def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def run_grobid(pdf_path: Path, tei_path: Path, grobid_url: str = DEFAULT_GROBID_URL) -> None:
+_GROBID_CONNECT_TIMEOUT = 10.0
+_GROBID_RETRY_INTERVAL = 5.0
+
+
+def run_grobid(
+    pdf_path: Path,
+    tei_path: Path,
+    grobid_url: str = DEFAULT_GROBID_URL,
+    timeout: int = DEFAULT_GROBID_TIMEOUT,
+) -> None:
     ensure_parent(tei_path)
     if tei_path.exists() and tei_path.stat().st_size > 0:
         return
-    command = [
-        "curl",
-        "--fail",
-        "--silent",
-        "--show-error",
-        "-o",
-        str(tei_path),
-        "-F",
-        f"input=@{pdf_path}",
-        "-F",
-        "teiCoordinates=1",
-        f"{grobid_url}/processFulltextDocument",
-    ]
-    subprocess.run(command, check=True)
-    if not tei_path.exists() or tei_path.stat().st_size == 0:
-        raise RuntimeError(f"GROBID did not produce output for {pdf_path}")
+    url = f"{grobid_url}/processFulltextDocument"
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with pdf_path.open("rb") as pdf_file:
+                response = httpx.post(
+                    url,
+                    files={"input": (pdf_path.name, pdf_file, "application/pdf")},
+                    data={"teiCoordinates": "1"},
+                    timeout=httpx.Timeout(
+                        connect=_GROBID_CONNECT_TIMEOUT,
+                        read=float(timeout),
+                        write=30.0,
+                        pool=5.0,
+                    ),
+                )
+            response.raise_for_status()
+            tei_path.write_text(response.text, encoding="utf-8")
+            return
+        except httpx.ConnectError as exc:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"could not connect to GROBID at {grobid_url} after {timeout}s"
+                ) from exc
+            time.sleep(min(_GROBID_RETRY_INTERVAL, remaining))
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(f"GROBID request timed out after {timeout}s") from exc
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"GROBID returned HTTP {exc.response.status_code}") from exc
 
 
 def run_pdfalto(
