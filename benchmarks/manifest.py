@@ -25,29 +25,34 @@ def build_manifest(cfg: Dict[str, Any], workdir: Path, mode: str) -> List[Dict[s
             token=token,
         )
 
-        table = pq.read_table(parquet_path)
-        ids = table.column("id").to_pylist()
-        pdfs = table.column("pdf").to_pylist()
-        xmls = table.column("xml").to_pylist()
-
+        # Two-pass streaming read so we never load all PDFs into RAM.
+        # Pass 1: ids only (~few MB) to pick the sample indices.
+        # Pass 2: iterate row-group batches, materialise only the picked rows to disk.
+        pf = pq.ParquetFile(parquet_path)
+        ids = pf.read(columns=["id"]).column("id").to_pylist()
         n = min(sample_sizes[corpus], len(ids))
         rng = np.random.default_rng(seed)
-        picked = sorted(rng.choice(len(ids), size=n, replace=False).tolist())
+        picked_idx = set(int(i) for i in rng.choice(len(ids), size=n, replace=False))
 
         corpus_dir = workdir / corpus
         corpus_dir.mkdir(parents=True, exist_ok=True)
-        for idx in picked:
-            rid = str(ids[idx])
-            pdf_path = corpus_dir / f"{rid}.pdf"
-            xml_path = corpus_dir / f"{rid}.xml"
-            if not pdf_path.exists():
-                pdf_path.write_bytes(bytes(pdfs[idx]))
-            if not xml_path.exists():
-                xml_path.write_text(str(xmls[idx]), encoding="utf-8")
-            rows.append({
-                "corpus": corpus,
-                "record_id": rid,
-                "pdf_path": str(pdf_path),
-                "xml_path": str(xml_path),
-            })
+
+        global_i = 0
+        for batch in pf.iter_batches(batch_size=64, columns=["id", "pdf", "xml"]):
+            for i in range(batch.num_rows):
+                if global_i in picked_idx:
+                    rid = str(batch.column("id")[i].as_py())
+                    pdf_path = corpus_dir / f"{rid}.pdf"
+                    xml_path = corpus_dir / f"{rid}.xml"
+                    if not pdf_path.exists():
+                        pdf_path.write_bytes(bytes(batch.column("pdf")[i].as_py()))
+                    if not xml_path.exists():
+                        xml_path.write_text(str(batch.column("xml")[i].as_py()), encoding="utf-8")
+                    rows.append({
+                        "corpus": corpus,
+                        "record_id": rid,
+                        "pdf_path": str(pdf_path),
+                        "xml_path": str(xml_path),
+                    })
+                global_i += 1
     return rows
