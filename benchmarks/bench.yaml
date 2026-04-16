@@ -1,0 +1,35 @@
+dataset:
+  repo_id: elifepathways/sciencebeam-v2-benchmarking
+  revision: main  # TODO: pin a tag (e.g. v1.0.0-scielo-preprints) once ready
+  files:
+    scielo_preprints: scielo_preprints.parquet
+
+corpora: [scielo_preprints]
+
+sampling:
+  full:
+    scielo_preprints: 1000
+  smoke:
+    scielo_preprints: 50
+
+seeds:
+  sample: 42
+  llm: 0
+
+metrics: [title_match, authors_recall, abstract_recall, keywords_recall, language_match, identifiers_recall]
+
+bootstrap:
+  n_resamples: 200
+  confidence_level: 0.95
+
+doc_concurrency: 4   # parallel documents through Grobid/pdfalto/LLM (keep <= Grobid engine pool)
+llm:
+  temperature: 0.0
+  max_tokens: 800
+  workers: 5
+  concurrency: 20
+
+grobid:
+  url: http://localhost:8070/api
+  pdfalto_start_page: 1
+  pdfalto_end_page: 5
