@@ -39,7 +39,7 @@ bootstrap:
   n_resamples: 200
   confidence_level: 0.95
 
-doc_concurrency: 10  # parallel documents through Grobid/pdfalto/LLM (<= Grobid engine pool default)
+doc_concurrency: 4   # lfoppiano/grobid:0.9.0-crf saturates at ~4-6 parallel; 10 hits HTTP 503
 llm:
   temperature: 0.0
   max_tokens: 800
