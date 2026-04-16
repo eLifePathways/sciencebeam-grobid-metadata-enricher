@@ -22,12 +22,12 @@ sampling:
     scielo_mx: 112
     scielo_preprints: 1000
   smoke:
-    biorxiv: 50
-    ore: 50
-    pkp: 50
-    scielo_br: 50
-    scielo_mx: 50
-    scielo_preprints: 50
+    biorxiv: 25
+    ore: 25
+    pkp: 25
+    scielo_br: 25
+    scielo_mx: 25
+    scielo_preprints: 25
 
 seeds:
   sample: 42
@@ -39,7 +39,7 @@ bootstrap:
   n_resamples: 200
   confidence_level: 0.95
 
-doc_concurrency: 4   # parallel documents through Grobid/pdfalto/LLM (keep <= Grobid engine pool)
+doc_concurrency: 10  # parallel documents through Grobid/pdfalto/LLM (<= Grobid engine pool default)
 llm:
   temperature: 0.0
   max_tokens: 800
