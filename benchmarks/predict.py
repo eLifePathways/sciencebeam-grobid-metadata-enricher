@@ -11,12 +11,12 @@ from typing import Any, Dict, Optional
 
 import yaml
 
+from benchmarks.gold import extract_gold
 from benchmarks.manifest import build_manifest
 from grobid_metadata_enricher.clients import AoaiPool, run_grobid, run_pdfalto
 from grobid_metadata_enricher.evaluation import evaluate_record
 from grobid_metadata_enricher.formats import (
     extract_alto_lines,
-    extract_oai_dc,
     extract_tei_abstracts,
     extract_tei_fields,
     normalize_metadata,
@@ -76,9 +76,8 @@ def process_one(row: Dict[str, str], chat, out_dir: Path, cfg: Dict[str, Any]) -
     except Exception as exc:
         return {"record_id": record_id, "corpus": corpus, "error": f"extraction: {exc}"}
 
-    # Gold: scielo_preprints uses OAI-DC XML. When other corpora land, branch on corpus here.
     try:
-        gold = extract_oai_dc(xml_path)
+        gold = extract_gold(corpus, xml_path)
     except Exception as exc:
         return {"record_id": record_id, "corpus": corpus, "error": f"gold: {exc}"}
 

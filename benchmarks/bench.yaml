@@ -1,15 +1,32 @@
 dataset:
   repo_id: elifepathways/sciencebeam-v2-benchmarking
-  revision: main  # TODO: pin a tag (e.g. v1.0.0-scielo-preprints) once ready
+  revision: main  # TODO: pin a tag (e.g. v1.0.0) once ready
   files:
+    biorxiv: biorxiv.parquet
+    ore: ore.parquet
+    pkp: pkp.parquet
+    scielo_br: scielo_br.parquet
+    scielo_mx: scielo_mx.parquet
     scielo_preprints: scielo_preprints.parquet
 
-corpora: [scielo_preprints]
+corpora: [biorxiv, ore, pkp, scielo_br, scielo_mx, scielo_preprints]
 
+# Dataset row counts at revision main:
+#   biorxiv 158, ore 199, pkp 200, scielo_br 200, scielo_mx 112, scielo_preprints 1000
 sampling:
   full:
+    biorxiv: 158
+    ore: 199
+    pkp: 200
+    scielo_br: 200
+    scielo_mx: 112
     scielo_preprints: 1000
   smoke:
+    biorxiv: 50
+    ore: 50
+    pkp: 50
+    scielo_br: 50
+    scielo_mx: 50
     scielo_preprints: 50
 
 seeds:
