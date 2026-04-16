@@ -156,8 +156,7 @@ def _section_head_recall(gold_heads: List[str], pred_heads: List[str]) -> Option
             if not ps:
                 continue
             jaccard = len(g_tokens & ps) / max(1, len(g_tokens | ps))
-            if jaccard > best:
-                best = jaccard
+            best = max(best, jaccard)
         if best >= 0.7:
             matched += 1
     return matched / max(1, len(gold_heads))
