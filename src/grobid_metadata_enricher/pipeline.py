@@ -720,80 +720,75 @@ def predict_content_fields_from_alto(
                 seen.add(k)
 
     head_text = all_text[:max_chars]
-    try:
-        raw = chat(
-            [
-                {"role": "system", "content": CONTENT_EXTRACTION_PROMPT},
-                {"role": "user", "content": head_text},
-            ],
-            temperature=0.0,
-            max_tokens=max_tokens,
+    tail_text = all_text[-references_max_chars:]
+    full_for_tf = all_text[:tables_figures_max_chars]
+
+    def _call(system_prompt: str, user_text: str, out_tokens: int) -> Optional[Dict[str, Any]]:
+        try:
+            raw = chat(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_text},
+                ],
+                temperature=0.0,
+                max_tokens=out_tokens,
+            )
+            return extract_json_from_text(raw)
+        except Exception:
+            return None
+
+    # Run the 3 passes concurrently; merges after are serial and so stay thread-safe.
+    with ThreadPoolExecutor(max_workers=3) as _content_ex:
+        head_fut = _content_ex.submit(_call, CONTENT_EXTRACTION_PROMPT, head_text, max_tokens)
+        refs_fut = (
+            _content_ex.submit(_call, REFERENCES_EXTRACTION_PROMPT, tail_text, references_max_tokens)
+            if len(tail_text.strip()) > 200 else None
         )
-        payload = extract_json_from_text(raw)
+        tf_fut = (
+            _content_ex.submit(_call, TABLES_FIGURES_EXTRACTION_PROMPT, full_for_tf, tables_figures_max_tokens)
+            if len(full_for_tf.strip()) > 500 else None
+        )
+        head_payload = head_fut.result()
+        refs_payload = refs_fut.result() if refs_fut is not None else None
+        tf_payload = tf_fut.result() if tf_fut is not None else None
+
+    if head_payload:
         for key, bucket in (
             ("body_sections", body_sections),
             ("figure_captions", figure_captions),
             ("table_captions", table_captions),
             ("reference_titles", reference_titles),
         ):
-            values = payload.get(key) or []
+            values = head_payload.get(key) or []
             if isinstance(values, list):
                 _dedupe_add(bucket, [str(v).strip() for v in values if str(v).strip()])
-    except Exception:
-        pass
 
-    tail_text = all_text[-references_max_chars:]
-    if len(tail_text.strip()) > 200:
-        try:
-            raw = chat(
-                [
-                    {"role": "system", "content": REFERENCES_EXTRACTION_PROMPT},
-                    {"role": "user", "content": tail_text},
-                ],
-                temperature=0.0,
-                max_tokens=references_max_tokens,
-            )
-            payload = extract_json_from_text(raw)
-            refs = payload.get("references") or []
-            if isinstance(refs, list):
-                new_titles: List[str] = []
-                new_dois: List[str] = []
-                for r in refs:
-                    if not isinstance(r, dict):
-                        continue
-                    title = str(r.get("title") or "").strip()
-                    if title:
-                        new_titles.append(title)
-                    doi_candidate = str(r.get("doi") or "").strip()
-                    if doi_candidate:
-                        m = _CONTENT_DOI_RE.search(doi_candidate)
-                        if m:
-                            new_dois.append(m.group(0).lower().rstrip(".,;)"))
-                _dedupe_add(reference_titles, new_titles)
-                _dedupe_add(reference_dois, new_dois)
-        except Exception:
-            pass
+    if refs_payload:
+        refs = refs_payload.get("references") or []
+        if isinstance(refs, list):
+            new_titles: List[str] = []
+            new_dois: List[str] = []
+            for r in refs:
+                if not isinstance(r, dict):
+                    continue
+                title = str(r.get("title") or "").strip()
+                if title:
+                    new_titles.append(title)
+                doi_candidate = str(r.get("doi") or "").strip()
+                if doi_candidate:
+                    m = _CONTENT_DOI_RE.search(doi_candidate)
+                    if m:
+                        new_dois.append(m.group(0).lower().rstrip(".,;)"))
+            _dedupe_add(reference_titles, new_titles)
+            _dedupe_add(reference_dois, new_dois)
 
-    full_for_tf = all_text[:tables_figures_max_chars]
-    if len(full_for_tf.strip()) > 500:
-        try:
-            raw = chat(
-                [
-                    {"role": "system", "content": TABLES_FIGURES_EXTRACTION_PROMPT},
-                    {"role": "user", "content": full_for_tf},
-                ],
-                temperature=0.0,
-                max_tokens=tables_figures_max_tokens,
-            )
-            payload = extract_json_from_text(raw)
-            tables_list = payload.get("tables") or []
-            figures_list = payload.get("figures") or []
-            if isinstance(tables_list, list):
-                _dedupe_add(table_captions, [str(t).strip() for t in tables_list if str(t).strip()])
-            if isinstance(figures_list, list):
-                _dedupe_add(figure_captions, [str(t).strip() for t in figures_list if str(t).strip()])
-        except Exception:
-            pass
+    if tf_payload:
+        tables_list = tf_payload.get("tables") or []
+        figures_list = tf_payload.get("figures") or []
+        if isinstance(tables_list, list):
+            _dedupe_add(table_captions, [str(t).strip() for t in tables_list if str(t).strip()])
+        if isinstance(figures_list, list):
+            _dedupe_add(figure_captions, [str(t).strip() for t in figures_list if str(t).strip()])
 
     return {
         "body_sections": body_sections,

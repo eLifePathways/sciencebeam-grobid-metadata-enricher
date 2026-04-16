@@ -55,8 +55,8 @@ doc_concurrency: 4   # lfoppiano/grobid:0.9.0-crf saturates at ~4-6 parallel; 10
 llm:
   temperature: 0.0
   max_tokens: 800
-  workers: 5
-  concurrency: 20
+  workers: 10        # build_prediction internal pool
+  concurrency: 40    # global AoaiPool semaphore: 4 docs * up to 8 concurrent LLM calls + headroom
 
 grobid:
   url: http://localhost:8070/api

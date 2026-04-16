@@ -88,15 +88,23 @@ def process_one(row: Dict[str, str], chat, out_dir: Path, cfg: Dict[str, Any]) -
             tei_content = {}
 
         # LLM pred = build_prediction + (on content corpora) merged TEI/LLM content
-        # + Crossref-enriched references.
+        # + Crossref-enriched references. header and content stages share no inputs
+        # and run concurrently; crossref enrichment depends on the merged pred.
         if pred_path.exists() and pred_path.stat().st_size > 0:
             llm_pred = json.loads(pred_path.read_text(encoding="utf-8"))
         else:
-            llm_pred = build_prediction(context, chat, cfg["llm"]["workers"])
-            if corpus in _CONTENT_CORPORA:
-                llm_content = predict_content_fields_from_alto(lines, chat)
-                llm_pred = {**llm_pred, **merge_content_fields(tei_content, llm_content)}
-                llm_pred = enrich_references_with_crossref(llm_pred, tei_path)
+            workers = cfg["llm"]["workers"]
+            with ThreadPoolExecutor(max_workers=2) as _stage_ex:
+                header_fut = _stage_ex.submit(build_prediction, context, chat, workers)
+                content_fut = (
+                    _stage_ex.submit(predict_content_fields_from_alto, lines, chat)
+                    if corpus in _CONTENT_CORPORA else None
+                )
+                llm_pred = header_fut.result()
+                if content_fut is not None:
+                    llm_content = content_fut.result()
+                    llm_pred = {**llm_pred, **merge_content_fields(tei_content, llm_content)}
+                    llm_pred = enrich_references_with_crossref(llm_pred, tei_path)
             pred_path.write_text(json.dumps(llm_pred, ensure_ascii=True, indent=2), encoding="utf-8")
     except Exception as exc:
         return {"record_id": record_id, "corpus": corpus, "error": f"extraction: {exc}"}
