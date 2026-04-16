@@ -84,7 +84,14 @@ jobs:
         run: |
           mkdir -p runtime
           printf '%s' "$AOAI_POOL_JSON" > runtime/aoai_pool.json
-          test -s runtime/aoai_pool.json
+          size=$(wc -c < runtime/aoai_pool.json)
+          echo "pool file size: $size bytes"
+          if [ "$size" -lt 20 ]; then
+            echo "::error::AOAI_POOL_JSON secret is suspiciously small ($size bytes); did you paste a path instead of the file content?"
+            exit 1
+          fi
+          python3 -c "import json; json.load(open('runtime/aoai_pool.json'))" \
+            || { echo "::error::AOAI_POOL_JSON secret is not valid JSON"; exit 1; }
 
       - name: Wait for Grobid
         run: |
