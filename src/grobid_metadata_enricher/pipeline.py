@@ -40,9 +40,12 @@ from .formats import (
 from .prompts import (
     ABSTRACT_EXTRACTION_PROMPT,
     ABSTRACT_SELECTION_PROMPT,
+    CONTENT_EXTRACTION_PROMPT,
     HEADER_METADATA_PROMPT,
     KEYWORD_TRANSLATION_PROMPT,
     OCR_CLEANUP_PROMPT,
+    REFERENCES_EXTRACTION_PROMPT,
+    TABLES_FIGURES_EXTRACTION_PROMPT,
     TEI_METADATA_PROMPT,
 )
 
@@ -149,7 +152,8 @@ class PipelineSettings:
     grobid_url: str = DEFAULT_GROBID_URL
     pdfalto_bin: Path = DEFAULT_PDFALTO_BIN
     pdfalto_start_page: int = 1
-    pdfalto_end_page: int = 2
+    pdfalto_end_page: int = 99
+    pdfalto_header_end_page: int = 2
     limit: Optional[int] = None
     rerun: bool = False
     workers: int = 20
@@ -659,6 +663,305 @@ def extract_abstract_from_ocr(clean_text: str, chat: Callable[..., str]) -> str:
     ]
     payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600))
     return str(payload.get("abstract", "")).strip()
+
+
+_CONTENT_DOI_RE = re.compile(r"10\.\d{4,9}/[^\s<>\"'\\)]+", re.IGNORECASE)
+
+
+def predict_content_fields_from_alto(
+    lines: Sequence[LayoutLine],
+    chat: Callable[..., str],
+    max_chars: int = 25000,
+    max_tokens: int = 2000,
+    references_max_chars: int = 40000,
+    references_max_tokens: int = 4500,
+    tables_figures_max_chars: int = 110000,
+    tables_figures_max_tokens: int = 3500,
+) -> MetadataRecord:
+    """Extract body/figure/table/reference content from full-paper ALTO text.
+
+    Runs three LLM passes so long papers do not lose content past an input cap:
+      head pass over the first max_chars (body sections, inline figures/tables,
+      references visible in the head);
+      references pass over the last references_max_chars (reference list at the
+      tail of the paper, with a larger output budget so long bibliographies are
+      not truncated);
+      tables/figures pass over the first tables_figures_max_chars (tables and
+      figures scattered through the body; a wider window than the head pass so
+      captions past page 20 or so are still covered).
+
+    Each pass appends into shared per-key buckets with whitespace-normalised
+    case-insensitive dedup. Callers typically merge the result with the TEI
+    content_fields via merge_content_fields.
+    """
+    all_text = "\n".join(line["text"] for line in lines if line.get("text"))
+    empty: MetadataRecord = {
+        "body_sections": [],
+        "figure_captions": [],
+        "table_captions": [],
+        "reference_titles": [],
+        "reference_dois": [],
+    }
+    if not all_text.strip():
+        return empty
+
+    body_sections: List[str] = []
+    figure_captions: List[str] = []
+    table_captions: List[str] = []
+    reference_titles: List[str] = []
+    reference_dois: List[str] = []
+
+    def _dedupe_add(target: List[str], items: List[str]) -> None:
+        seen = {" ".join(x.split()).lower() for x in target}
+        for it in items:
+            k = " ".join(str(it).split()).lower()
+            if k and k not in seen:
+                target.append(it)
+                seen.add(k)
+
+    head_text = all_text[:max_chars]
+    try:
+        raw = chat(
+            [
+                {"role": "system", "content": CONTENT_EXTRACTION_PROMPT},
+                {"role": "user", "content": head_text},
+            ],
+            temperature=0.0,
+            max_tokens=max_tokens,
+        )
+        payload = extract_json_from_text(raw)
+        for key, bucket in (
+            ("body_sections", body_sections),
+            ("figure_captions", figure_captions),
+            ("table_captions", table_captions),
+            ("reference_titles", reference_titles),
+        ):
+            values = payload.get(key) or []
+            if isinstance(values, list):
+                _dedupe_add(bucket, [str(v).strip() for v in values if str(v).strip()])
+    except Exception:
+        pass
+
+    tail_text = all_text[-references_max_chars:]
+    if len(tail_text.strip()) > 200:
+        try:
+            raw = chat(
+                [
+                    {"role": "system", "content": REFERENCES_EXTRACTION_PROMPT},
+                    {"role": "user", "content": tail_text},
+                ],
+                temperature=0.0,
+                max_tokens=references_max_tokens,
+            )
+            payload = extract_json_from_text(raw)
+            refs = payload.get("references") or []
+            if isinstance(refs, list):
+                new_titles: List[str] = []
+                new_dois: List[str] = []
+                for r in refs:
+                    if not isinstance(r, dict):
+                        continue
+                    title = str(r.get("title") or "").strip()
+                    if title:
+                        new_titles.append(title)
+                    doi_candidate = str(r.get("doi") or "").strip()
+                    if doi_candidate:
+                        m = _CONTENT_DOI_RE.search(doi_candidate)
+                        if m:
+                            new_dois.append(m.group(0).lower().rstrip(".,;)"))
+                _dedupe_add(reference_titles, new_titles)
+                _dedupe_add(reference_dois, new_dois)
+        except Exception:
+            pass
+
+    full_for_tf = all_text[:tables_figures_max_chars]
+    if len(full_for_tf.strip()) > 500:
+        try:
+            raw = chat(
+                [
+                    {"role": "system", "content": TABLES_FIGURES_EXTRACTION_PROMPT},
+                    {"role": "user", "content": full_for_tf},
+                ],
+                temperature=0.0,
+                max_tokens=tables_figures_max_tokens,
+            )
+            payload = extract_json_from_text(raw)
+            tables_list = payload.get("tables") or []
+            figures_list = payload.get("figures") or []
+            if isinstance(tables_list, list):
+                _dedupe_add(table_captions, [str(t).strip() for t in tables_list if str(t).strip()])
+            if isinstance(figures_list, list):
+                _dedupe_add(figure_captions, [str(t).strip() for t in figures_list if str(t).strip()])
+        except Exception:
+            pass
+
+    return {
+        "body_sections": body_sections,
+        "figure_captions": figure_captions,
+        "table_captions": table_captions,
+        "reference_titles": reference_titles,
+        "reference_dois": reference_dois,
+    }
+
+
+def merge_content_fields(tei_content: MetadataRecord, llm_content: MetadataRecord) -> MetadataRecord:
+    """Merge TEI content_fields with LLM content_fields.
+
+    For each list field the result starts from the TEI list and appends LLM
+    items not already present by whitespace-normalised lowercase key.
+    Preserves the extractor that found each item first.
+    """
+    out: MetadataRecord = dict(tei_content)
+    for key in ("body_sections", "figure_captions", "table_captions", "reference_titles", "reference_dois"):
+        tei_items = list(tei_content.get(key) or [])
+        llm_items = list(llm_content.get(key) or [])
+        seen = {" ".join(str(i).split()).lower(): None for i in tei_items}
+        for item in llm_items:
+            key_str = " ".join(str(item).split()).lower()
+            if key_str and key_str not in seen:
+                tei_items.append(item)
+                seen[key_str] = None
+        out[key] = tei_items
+    return out
+
+
+def enrich_references_with_crossref(
+    pred: MetadataRecord,
+    tei_path: Path,
+    crossref_client: Any = None,
+    max_lookups: int = 80,
+    max_workers: int = 5,
+) -> MetadataRecord:
+    """Augment pred reference fields by looking up any GROBID-parsed biblStruct
+    that has a title but no idno DOI via Crossref.
+
+    Mirrors the europe_pmc_jats enrichment pattern in corpus-pipeline: no LLM
+    involved; Crossref returns a DOI and a canonical title for matches above
+    the client's internal Jaccard threshold. Recovered items are merged into
+    pred['reference_dois'] and pred['reference_titles'] with dedup.
+    """
+    import xml.etree.ElementTree as _ET
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
+    from .crossref import CrossrefClient as _CrossrefClient
+
+    if crossref_client is None:
+        crossref_client = _CrossrefClient()
+
+    try:
+        tree = _ET.parse(tei_path)
+    except Exception:
+        return pred
+
+    out = dict(pred)
+    out["reference_dois"] = list(pred.get("reference_dois") or [])
+    out["reference_titles"] = list(pred.get("reference_titles") or [])
+
+    def _strip(tag: str) -> str:
+        return tag.split("}", 1)[1] if "}" in tag else tag
+
+    def _text(el: Any) -> str:
+        return " ".join(el.itertext()).strip() if el is not None else ""
+
+    signatures: List[Dict[str, Any]] = []
+    for bibl in tree.getroot().iter():
+        if _strip(bibl.tag) != "biblStruct":
+            continue
+        has_doi = False
+        for inner in bibl.iter():
+            if _strip(inner.tag) == "idno" and (inner.get("type") or "").lower() == "doi" and _text(inner):
+                has_doi = True
+                break
+        if has_doi:
+            continue
+
+        title = ""
+        for inner in bibl.iter():
+            if _strip(inner.tag) == "title" and (inner.get("level") or "").lower() == "a":
+                title = _text(inner)
+                if title:
+                    break
+        if not title:
+            for inner in bibl.iter():
+                if _strip(inner.tag) == "title":
+                    title = _text(inner)
+                    if title:
+                        break
+        if not title or len(title) < 15:
+            continue
+
+        authors: List[str] = []
+        for pers in bibl.iter():
+            if _strip(pers.tag) != "persName":
+                continue
+            surname = ""
+            for ch in pers:
+                if _strip(ch.tag) == "surname":
+                    surname = _text(ch)
+            if surname:
+                authors.append(surname)
+            if len(authors) >= 4:
+                break
+
+        journal = ""
+        for inner in bibl.iter():
+            if _strip(inner.tag) == "title" and (inner.get("level") or "").lower() in {"j", "m"}:
+                journal = _text(inner)
+                if journal:
+                    break
+
+        year = ""
+        for inner in bibl.iter():
+            if _strip(inner.tag) == "date":
+                year = (inner.get("when") or _text(inner) or "").strip()
+                m = re.search(r"\b(19|20)\d{2}\b", year)
+                if m:
+                    year = m.group(0)
+                if year:
+                    break
+
+        signatures.append({"title": title, "authors": authors, "year": year, "journal": journal})
+        if len(signatures) >= max_lookups:
+            break
+
+    if not signatures:
+        return out
+
+    def _lookup(sig: Dict[str, Any]) -> Dict[str, str]:
+        return crossref_client.lookup(
+            title=sig["title"], authors=sig["authors"], year=sig["year"], journal=sig["journal"]
+        )
+
+    recovered_dois: List[str] = []
+    recovered_titles: List[str] = []
+    if max_workers <= 1:
+        for sig in signatures:
+            hit = _lookup(sig)
+            if hit.get("doi"):
+                recovered_dois.append(hit["doi"])
+            if hit.get("title"):
+                recovered_titles.append(hit["title"])
+    else:
+        with _TPE(max_workers=max_workers) as ex:
+            for hit in ex.map(_lookup, signatures):
+                if hit.get("doi"):
+                    recovered_dois.append(hit["doi"])
+                if hit.get("title"):
+                    recovered_titles.append(hit["title"])
+
+    existing_dois = set(out["reference_dois"])
+    for d in recovered_dois:
+        if d not in existing_dois:
+            out["reference_dois"].append(d)
+            existing_dois.add(d)
+
+    existing_title_keys = {" ".join(t.split()).lower() for t in out["reference_titles"]}
+    for t in recovered_titles:
+        key = " ".join(t.split()).lower()
+        if key and key not in existing_title_keys:
+            out["reference_titles"].append(t)
+            existing_title_keys.add(key)
+    return out
 
 
 def build_prediction(

@@ -178,6 +178,8 @@ def run_grobid(
     tei_path: Path,
     grobid_url: str = DEFAULT_GROBID_URL,
     timeout: int = DEFAULT_GROBID_TIMEOUT,
+    consolidate_header: int = 0,
+    consolidate_citations: int = 0,
 ) -> None:
     ensure_parent(tei_path)
     if tei_path.exists() and tei_path.stat().st_size > 0:
@@ -190,7 +192,11 @@ def run_grobid(
                 response = httpx.post(
                     url,
                     files={"input": (pdf_path.name, pdf_file, "application/pdf")},
-                    data={"teiCoordinates": "1"},
+                    data={
+                        "teiCoordinates": "1",
+                        "consolidateHeader": str(int(consolidate_header)),
+                        "consolidateCitations": str(int(consolidate_citations)),
+                    },
                     timeout=httpx.Timeout(
                         connect=_GROBID_CONNECT_TIMEOUT,
                         read=float(timeout),

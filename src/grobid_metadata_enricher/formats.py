@@ -287,6 +287,318 @@ def extract_tei_abstracts(tei_path: Path) -> List[str]:
     return abstracts
 
 
+def extract_jats_fields(xml_path: Path) -> MetadataRecord:
+    """Parse a JATS XML article into a metadata dict with both the 13 DC-shaped
+    header fields and 6 content fields (body_sections, figure_captions,
+    table_captions, reference_dois, reference_titles, reference_records,
+    formula_count).
+
+    Header fields are scoped to the first <article-meta> element so references
+    inside <back>/<ref-list> do not leak into the paper's own title/authors/
+    keywords.
+    """
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+
+    article_meta = None
+    for el in root.iter():
+        if strip_ns(el.tag) == "article-meta":
+            article_meta = el
+            break
+    scope = article_meta if article_meta is not None else root
+
+    titles: List[str] = []
+    for el in scope.iter():
+        if strip_ns(el.tag) in {"article-title", "trans-title"}:
+            t = collect_text(el)
+            if t:
+                titles.append(t)
+    title = titles[0] if titles else ""
+
+    authors: List[str] = []
+    for contrib in scope.iter():
+        if strip_ns(contrib.tag) != "contrib":
+            continue
+        ctype = contrib.get("contrib-type", "author")
+        if ctype and ctype.lower() != "author":
+            continue
+        for name_el in contrib.iter():
+            if strip_ns(name_el.tag) != "name":
+                continue
+            surname = given = ""
+            for child in name_el:
+                tag = strip_ns(child.tag)
+                if tag == "surname":
+                    surname = collect_text(child)
+                elif tag == "given-names":
+                    given = collect_text(child)
+            if surname:
+                authors.append(f"{given} {surname}".strip())
+            break
+
+    abstracts: List[str] = []
+    for el in scope.iter():
+        if strip_ns(el.tag) in {"abstract", "trans-abstract"}:
+            t = collect_text(el)
+            if t:
+                abstracts.append(t)
+
+    keywords: List[str] = []
+    keyword_groups: Dict[str, List[str]] = {}
+    for kg in scope.iter():
+        if strip_ns(kg.tag) != "kwd-group":
+            continue
+        lang_key = (
+            kg.get("{http://www.w3.org/XML/1998/namespace}lang")
+            or kg.get("lang")
+            or "unknown"
+        )
+        group: List[str] = []
+        for el in kg.iter():
+            if strip_ns(el.tag) == "kwd":
+                t = collect_text(el)
+                if t:
+                    group.append(t)
+                    keywords.append(t)
+        if group:
+            keyword_groups.setdefault(lang_key, []).extend(group)
+    if not keywords:
+        for el in scope.iter():
+            if strip_ns(el.tag) == "kwd":
+                t = collect_text(el)
+                if t:
+                    keywords.append(t)
+
+    doi = ""
+    for el in scope.iter():
+        if strip_ns(el.tag) == "article-id" and el.get("pub-id-type") == "doi":
+            doi = collect_text(el)
+            break
+
+    language = root.get("{http://www.w3.org/XML/1998/namespace}lang", "")
+
+    publisher = ""
+    for el in scope.iter():
+        if strip_ns(el.tag) == "publisher-name":
+            publisher = collect_text(el)
+            break
+
+    body_sections: List[str] = []
+    body_el = None
+    for el in root.iter():
+        if strip_ns(el.tag) == "body":
+            body_el = el
+            break
+    if body_el is not None:
+        for sec in body_el.iter():
+            if strip_ns(sec.tag) != "sec":
+                continue
+            for child in sec:
+                if strip_ns(child.tag) == "title":
+                    t = collect_text(child)
+                    if t:
+                        body_sections.append(t)
+                    break
+
+    figure_captions: List[str] = []
+    for fig in root.iter():
+        if strip_ns(fig.tag) != "fig":
+            continue
+        label_text = ""
+        caption_text = ""
+        for child in fig:
+            tag = strip_ns(child.tag)
+            if tag == "label":
+                label_text = collect_text(child)
+            elif tag == "caption":
+                caption_text = collect_text(child)
+        combined = " ".join(part for part in (label_text, caption_text) if part).strip()
+        if combined:
+            figure_captions.append(combined)
+
+    table_captions: List[str] = []
+    for tw in root.iter():
+        if strip_ns(tw.tag) != "table-wrap":
+            continue
+        label_text = ""
+        caption_text = ""
+        for child in tw:
+            tag = strip_ns(child.tag)
+            if tag == "label":
+                label_text = collect_text(child)
+            elif tag == "caption":
+                caption_text = collect_text(child)
+        combined = " ".join(part for part in (label_text, caption_text) if part).strip()
+        if combined:
+            table_captions.append(combined)
+
+    reference_dois: List[str] = []
+    reference_titles: List[str] = []
+    reference_records: List[Dict[str, str]] = []
+    for ref in root.iter():
+        if strip_ns(ref.tag) != "ref":
+            continue
+        got_doi = ""
+        for inner in ref.iter():
+            if strip_ns(inner.tag) == "pub-id" and (inner.get("pub-id-type") or "").lower() == "doi":
+                got_doi = collect_text(inner)
+                if got_doi:
+                    break
+        if got_doi:
+            reference_dois.append(got_doi)
+        got_title = ""
+        for inner in ref.iter():
+            if strip_ns(inner.tag) == "article-title":
+                got_title = collect_text(inner)
+                if got_title:
+                    break
+        if not got_title:
+            for inner in ref.iter():
+                if strip_ns(inner.tag) == "source":
+                    got_title = collect_text(inner)
+                    if got_title:
+                        break
+        if got_title:
+            reference_titles.append(got_title)
+        if got_doi or got_title:
+            reference_records.append({"doi": got_doi, "title": got_title})
+
+    formula_count = sum(
+        1 for el in root.iter() if strip_ns(el.tag) in {"disp-formula", "inline-formula"}
+    )
+
+    return {
+        "title": title,
+        "titles": titles,
+        "authors": authors,
+        "abstract": abstracts[0] if abstracts else "",
+        "abstracts": abstracts,
+        "keywords": keywords,
+        "keywords_groups": keyword_groups,
+        "publisher": publisher,
+        "date": "",
+        "language": language,
+        "identifiers": [doi] if doi else [],
+        "relations": [],
+        "rights": "",
+        "types": [],
+        "formats": [],
+        "body_sections": body_sections,
+        "figure_captions": figure_captions,
+        "table_captions": table_captions,
+        "reference_dois": reference_dois,
+        "reference_titles": reference_titles,
+        "reference_records": reference_records,
+        "formula_count": formula_count,
+    }
+
+
+def extract_tei_content_fields(tei_path: Path) -> MetadataRecord:
+    """Extract body/figure/table/reference content from a GROBID TEI file.
+
+    Returns the six content-field keys that complement extract_tei_fields' header
+    output. Shape is comparable to extract_jats_fields' content-side keys so
+    downstream merging is straightforward.
+    """
+    try:
+        tree = ET.parse(tei_path)
+    except Exception:
+        return {
+            "body_sections": [],
+            "figure_captions": [],
+            "table_captions": [],
+            "reference_dois": [],
+            "reference_titles": [],
+            "formula_count": 0,
+        }
+    root = tree.getroot()
+
+    body_sections: List[str] = []
+    body_el = None
+    for el in root.iter():
+        if strip_ns(el.tag) == "body":
+            body_el = el
+            break
+    if body_el is not None:
+        for div in body_el.iter():
+            if strip_ns(div.tag) != "div":
+                continue
+            for child in div:
+                if strip_ns(child.tag) == "head":
+                    t = collect_text(child)
+                    if t:
+                        body_sections.append(t)
+                    break
+
+    figure_captions: List[str] = []
+    table_captions: List[str] = []
+    for fig in root.iter():
+        if strip_ns(fig.tag) != "figure":
+            continue
+        kind = (fig.get("type") or "").lower()
+        head_text = ""
+        desc_text = ""
+        for child in fig:
+            tag = strip_ns(child.tag)
+            if tag == "head":
+                head_text = collect_text(child)
+            elif tag == "figDesc":
+                desc_text = collect_text(child)
+        combined = " ".join(p for p in (head_text, desc_text) if p).strip()
+        if not combined:
+            continue
+        if kind == "table":
+            table_captions.append(combined)
+        else:
+            figure_captions.append(combined)
+
+    reference_dois: List[str] = []
+    reference_titles: List[str] = []
+    doi_re = re.compile(r"10\.\d{4,9}/[^\s<>\"'\\]+", re.IGNORECASE)
+    for bibl in root.iter():
+        if strip_ns(bibl.tag) != "biblStruct":
+            continue
+        got_doi = ""
+        for inner in bibl.iter():
+            tag = strip_ns(inner.tag)
+            if tag == "idno" and (inner.get("type") or "").lower() == "doi":
+                got_doi = collect_text(inner)
+                if got_doi:
+                    break
+        if not got_doi:
+            for inner in bibl.iter():
+                if strip_ns(inner.tag) == "ptr":
+                    target = inner.get("target") or ""
+                    m = doi_re.search(target)
+                    if m:
+                        got_doi = m.group(0)
+                        break
+        if got_doi:
+            reference_dois.append(got_doi)
+        got_title = ""
+        for inner in bibl.iter():
+            if strip_ns(inner.tag) != "title":
+                continue
+            level = (inner.get("level") or "").lower()
+            if level == "a":
+                got_title = collect_text(inner)
+                if got_title:
+                    break
+        if got_title:
+            reference_titles.append(got_title)
+
+    formula_count = sum(1 for el in root.iter() if strip_ns(el.tag) == "formula")
+
+    return {
+        "body_sections": body_sections,
+        "figure_captions": figure_captions,
+        "table_captions": table_captions,
+        "reference_dois": reference_dois,
+        "reference_titles": reference_titles,
+        "formula_count": formula_count,
+    }
+
+
 def extract_json_from_text(text: str) -> Dict[str, Any]:
     text = text.strip()
     try:
