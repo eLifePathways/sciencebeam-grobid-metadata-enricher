@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 from __future__ import annotations
 
 import json
@@ -836,7 +837,6 @@ def enrich_references_with_crossref(
     pred['reference_dois'] and pred['reference_titles'] with dedup.
     """
     import xml.etree.ElementTree as _ET
-    from concurrent.futures import ThreadPoolExecutor as _TPE
 
     from .crossref import CrossrefClient as _CrossrefClient
 
@@ -923,9 +923,10 @@ def enrich_references_with_crossref(
         return out
 
     def _lookup(sig: Dict[str, Any]) -> Dict[str, str]:
-        return crossref_client.lookup(
+        result: Dict[str, str] = crossref_client.lookup(
             title=sig["title"], authors=sig["authors"], year=sig["year"], journal=sig["journal"]
         )
+        return result
 
     recovered_dois: List[str] = []
     recovered_titles: List[str] = []
@@ -937,7 +938,7 @@ def enrich_references_with_crossref(
             if hit.get("title"):
                 recovered_titles.append(hit["title"])
     else:
-        with _TPE(max_workers=max_workers) as ex:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
             for hit in ex.map(_lookup, signatures):
                 if hit.get("doi"):
                     recovered_dois.append(hit["doi"])

@@ -156,8 +156,7 @@ def _section_head_recall(gold_heads: List[str], pred_heads: List[str]) -> Option
             if not ps:
                 continue
             overlap = len(g_tokens & ps) / max(1, len(g_tokens))
-            if overlap > best:
-                best = overlap
+            best = max(best, overlap)
         if best >= 0.5:
             matched += 1
     return matched / max(1, len(gold_heads))
@@ -174,16 +173,15 @@ def _caption_set_recall(gold_captions: List[str], pred_captions: List[str]) -> O
         return None
     pred_captions = [c for c in pred_captions if normalize_text(c)]
     try:
-        from rapidfuzz.fuzz import token_set_ratio  # type: ignore
+        from rapidfuzz.fuzz import token_set_ratio
 
         matched = 0
         for c in gold_captions:
             cl = c.lower()
-            best = 0
+            best: float = 0.0
             for pc in pred_captions:
                 r = token_set_ratio(cl, pc.lower())
-                if r > best:
-                    best = r
+                best = max(best, r)
                 if best >= 50:
                     break
             if best >= 50:
@@ -203,8 +201,7 @@ def _caption_set_recall(gold_captions: List[str], pred_captions: List[str]) -> O
             if not ps:
                 continue
             j = len(g_tokens & ps) / max(1, len(g_tokens | ps))
-            if j > best:
-                best = j
+            best = max(best, j)
         if best >= 0.3:
             matched += 1
     return matched / max(1, len(gold_captions))
@@ -234,8 +231,7 @@ def _reference_recall(gold: Dict[str, Any], predicted: Dict[str, Any]) -> Option
             if not ps:
                 continue
             j = len(g_tokens & ps) / max(1, len(g_tokens | ps))
-            if j > best:
-                best = j
+            best = max(best, j)
         if best >= 0.3:
             matched += 1
     return matched / max(1, len(gold_titles))
@@ -259,13 +255,13 @@ def _reference_recall_combined(
         return None
     pred_doi_set = {normalize_identifier(str(d)) for d in (predicted.get("reference_dois") or []) if d}
     pred_titles = [str(t) for t in (predicted.get("reference_titles") or []) if t]
+    pred_token_sets = [set(normalize_tokens(t)) for t in pred_titles]
     try:
-        from rapidfuzz.fuzz import token_set_ratio  # type: ignore
+        from rapidfuzz.fuzz import token_set_ratio
 
         use_fuzzy = True
     except ImportError:
         use_fuzzy = False
-        pred_token_sets = [set(normalize_tokens(t)) for t in pred_titles]
 
     matched = 0
     for r in records:
@@ -283,8 +279,7 @@ def _reference_recall_combined(
             best = 0.0
             for pt in pred_titles:
                 rr = token_set_ratio(tl, pt.lower())
-                if rr > best:
-                    best = rr
+                best = max(best, rr)
                 if best >= fuzzy_threshold_pct:
                     break
             if best >= fuzzy_threshold_pct:
@@ -298,8 +293,7 @@ def _reference_recall_combined(
                 if not ps:
                     continue
                 j = len(g_tokens & ps) / max(1, len(g_tokens | ps))
-                if j > best:
-                    best = j
+                best = max(best, j)
             if best >= 0.3:
                 matched += 1
     return matched / max(1, len(records))

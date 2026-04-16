@@ -51,7 +51,8 @@ CONTENT_EXTRACTION_PROMPT = (
     "table_captions (list of table caption strings, one per table, including the 'Table N.' label); "
     "reference_titles (list of article titles cited in the reference list, one per reference). "
     "Omit any field that the text does not support. Keep each list ordered as items appear in the document. "
-    'Return JSON only: {"body_sections": [...], "figure_captions": [...], "table_captions": [...], "reference_titles": [...]}.'
+    'Return JSON only: '
+    '{"body_sections": [...], "figure_captions": [...], "table_captions": [...], "reference_titles": [...]}.'
 )
 
 REFERENCES_EXTRACTION_PROMPT = (

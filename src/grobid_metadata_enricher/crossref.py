@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 CROSSREF_BASE = "https://api.crossref.org/works"
 DEFAULT_TIMEOUT_S = 15.0
