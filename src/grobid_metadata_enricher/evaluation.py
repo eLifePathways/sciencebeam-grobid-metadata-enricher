@@ -141,7 +141,7 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
 
 
 def _section_head_recall(gold_heads: List[str], pred_heads: List[str]) -> Optional[float]:
-    """Fraction of gold section heads with normalized token overlap >= 0.5 against any pred head."""
+    """Fraction of gold section heads with symmetric token-Jaccard >= 0.7 against any pred head."""
     gold_heads = [h for h in gold_heads if normalize_text(h)]
     if not gold_heads:
         return None
@@ -155,9 +155,10 @@ def _section_head_recall(gold_heads: List[str], pred_heads: List[str]) -> Option
         for ps in pred_token_sets:
             if not ps:
                 continue
-            overlap = len(g_tokens & ps) / max(1, len(g_tokens))
-            best = max(best, overlap)
-        if best >= 0.5:
+            jaccard = len(g_tokens & ps) / max(1, len(g_tokens | ps))
+            if jaccard > best:
+                best = jaccard
+        if best >= 0.7:
             matched += 1
     return matched / max(1, len(gold_heads))
 
@@ -165,50 +166,61 @@ def _section_head_recall(gold_heads: List[str], pred_heads: List[str]) -> Option
 def _caption_set_recall(gold_captions: List[str], pred_captions: List[str]) -> Optional[float]:
     """Fraction of gold captions with a matching predicted caption.
 
-    Uses rapidfuzz.token_set_ratio >= 50 when rapidfuzz is available, otherwise
-    falls back to jaccard >= 0.3 on normalized tokens.
+    Greedy 1:1 bipartite matching so one pred caption cannot satisfy several
+    gold captions. Match condition is rapidfuzz.ratio >= 75 when rapidfuzz is
+    available, otherwise token-Jaccard >= 0.5 on normalized tokens.
     """
     gold_captions = [c for c in gold_captions if normalize_text(c)]
     if not gold_captions:
         return None
     pred_captions = [c for c in pred_captions if normalize_text(c)]
     try:
-        from rapidfuzz.fuzz import token_set_ratio
+        from rapidfuzz.fuzz import ratio as fuzz_ratio
 
+        used = [False] * len(pred_captions)
         matched = 0
         for c in gold_captions:
             cl = c.lower()
-            best: float = 0.0
-            for pc in pred_captions:
-                r = token_set_ratio(cl, pc.lower())
-                best = max(best, r)
-                if best >= 50:
-                    break
-            if best >= 50:
+            best_r = -1.0
+            best_i = -1
+            for i, pc in enumerate(pred_captions):
+                if used[i]:
+                    continue
+                r = fuzz_ratio(cl, pc.lower())
+                if r > best_r:
+                    best_r = r
+                    best_i = i
+            if best_i >= 0 and best_r >= 75:
+                used[best_i] = True
                 matched += 1
         return matched / max(1, len(gold_captions))
     except ImportError:
         pass
 
     pred_token_sets = [set(normalize_tokens(c)) for c in pred_captions]
+    used = [False] * len(pred_token_sets)
     matched = 0
     for c in gold_captions:
         g_tokens = set(normalize_tokens(c))
         if not g_tokens:
             continue
-        best = 0.0
-        for ps in pred_token_sets:
-            if not ps:
+        best_j = -1.0
+        best_i = -1
+        for i, ps in enumerate(pred_token_sets):
+            if used[i] or not ps:
                 continue
             j = len(g_tokens & ps) / max(1, len(g_tokens | ps))
-            best = max(best, j)
-        if best >= 0.3:
+            if j > best_j:
+                best_j = j
+                best_i = i
+        if best_i >= 0 and best_j >= 0.5:
+            used[best_i] = True
             matched += 1
     return matched / max(1, len(gold_captions))
 
 
 def _reference_recall(gold: Dict[str, Any], predicted: Dict[str, Any]) -> Optional[float]:
-    """DOI set recall when both sides have DOIs; otherwise title-jaccard fallback."""
+    """DOI set recall when both sides have DOIs; otherwise title-Jaccard >= 0.5 fallback."""
     gold_dois = [normalize_identifier(d) for d in (gold.get("reference_dois") or []) if d]
     pred_dois = [normalize_identifier(d) for d in (predicted.get("reference_dois") or []) if d]
     gold_set = {d for d in gold_dois if d}
@@ -232,7 +244,7 @@ def _reference_recall(gold: Dict[str, Any], predicted: Dict[str, Any]) -> Option
                 continue
             j = len(g_tokens & ps) / max(1, len(g_tokens | ps))
             best = max(best, j)
-        if best >= 0.3:
+        if best >= 0.5:
             matched += 1
     return matched / max(1, len(gold_titles))
 
