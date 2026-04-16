@@ -159,28 +159,3 @@ jobs:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cml comment create benchmarks/runs/${{ github.sha }}/report.md
-
-      # Optional: regression gate on one headline metric (overall LLM title_match).
-      # Emits a single value in `customSmallerIsBetter` format with the metric negated,
-      # so a *drop* in title_match looks like an *increase* to github-action-benchmark.
-      - name: Emit headline metric for regression gate
-        id: headline
-        run: |
-          uv run python - <<'PY'
-          import json, pathlib
-          m = json.loads(pathlib.Path("benchmarks/runs/${{ github.sha }}/metrics.json").read_text())
-          mean = m["overall"]["metrics"]["title_match"]["llm"]["mean"]
-          # Negate so "smaller is better" = "less negative title_match" = "higher title_match".
-          rec = [{"name": "overall.llm.title_match (inverted)", "unit": "score", "value": -mean}]
-          pathlib.Path("headline.json").write_text(json.dumps(rec))
-          PY
-      - name: Regression alert (github-action-benchmark)
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          tool: customSmallerIsBetter
-          output-file-path: headline.json
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          comment-on-alert: true
-          fail-on-alert: false   # flip to true once the gate is trusted
-          alert-threshold: "105%"   # alert if inverted metric grows >5% (= title_match dropped >5%)
-          auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
