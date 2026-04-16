@@ -18,6 +18,7 @@ from grobid_metadata_enricher.evaluation import evaluate_record
 from grobid_metadata_enricher.formats import (
     extract_alto_lines,
     extract_tei_abstracts,
+    extract_tei_content_fields,
     extract_tei_fields,
     normalize_metadata,
     read_tei_header,
@@ -25,8 +26,17 @@ from grobid_metadata_enricher.formats import (
 from grobid_metadata_enricher.pipeline import (
     DocumentContext,
     build_prediction,
+    enrich_references_with_crossref,
+    merge_content_fields,
     normalize_whitespace,
+    predict_content_fields_from_alto,
 )
+
+# Corpora whose gold carries body sections / captions / references and
+# therefore score the content-side gated metrics. Running the extra 3 LLM
+# calls + Crossref lookups on the others (biorxiv API JSON, scielo_preprints
+# OAI-DC) would be wasted: nothing to compare against.
+_CONTENT_CORPORA = {"ore", "pkp", "scielo_br", "scielo_mx"}
 
 
 def process_one(row: Dict[str, str], chat, out_dir: Path, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -67,11 +77,26 @@ def process_one(row: Dict[str, str], chat, out_dir: Path, cfg: Dict[str, Any]) -
             first_page_lines=[line for line in lines if line.get("page", 0) == 0],
             tei_fields=tei_fields, tei_abstracts=tei_abstracts,
         )
+
+        # Grobid pred = TEI header fields + TEI-parsed content (sections, captions,
+        # refs) for the corpora whose gold can score content.
         grobid_pred = normalize_metadata(tei_fields)
+        if corpus in _CONTENT_CORPORA:
+            tei_content = extract_tei_content_fields(tei_path)
+            grobid_pred = {**grobid_pred, **tei_content}
+        else:
+            tei_content = {}
+
+        # LLM pred = build_prediction + (on content corpora) merged TEI/LLM content
+        # + Crossref-enriched references.
         if pred_path.exists() and pred_path.stat().st_size > 0:
             llm_pred = json.loads(pred_path.read_text(encoding="utf-8"))
         else:
             llm_pred = build_prediction(context, chat, cfg["llm"]["workers"])
+            if corpus in _CONTENT_CORPORA:
+                llm_content = predict_content_fields_from_alto(lines, chat)
+                llm_pred = {**llm_pred, **merge_content_fields(tei_content, llm_content)}
+                llm_pred = enrich_references_with_crossref(llm_pred, tei_path)
             pred_path.write_text(json.dumps(llm_pred, ensure_ascii=True, indent=2), encoding="utf-8")
     except Exception as exc:
         return {"record_id": record_id, "corpus": corpus, "error": f"extraction: {exc}"}
