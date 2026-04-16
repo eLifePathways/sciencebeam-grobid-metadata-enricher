@@ -2,7 +2,7 @@ dataset:
   repo_id: elifepathways/sciencebeam-v2-benchmarking
   revision: main  # TODO: pin a tag (e.g. v1.0.0) once ready
   files:
-    biorxiv: biorxiv.parquet
+    biorxiv: {file: biorxiv-jats.parquet, id_column: ppr_id}
     ore: ore.parquet
     pkp: pkp.parquet
     scielo_br: scielo_br.parquet

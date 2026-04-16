@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pyarrow.parquet as pq
 from huggingface_hub import hf_hub_download
+
+
+def _resolve_entry(entry: Any) -> Tuple[str, str]:
+    """Return (parquet_filename, id_column). Entry may be a bare filename or
+    a dict like {file: name.parquet, id_column: ppr_id}."""
+    if isinstance(entry, dict):
+        return entry["file"], entry.get("id_column", "id")
+    return str(entry), "id"
 
 
 def build_manifest(cfg: Dict[str, Any], workdir: Path, mode: str) -> List[Dict[str, str]]:
@@ -16,7 +24,7 @@ def build_manifest(cfg: Dict[str, Any], workdir: Path, mode: str) -> List[Dict[s
     token = os.environ.get("HF_TOKEN")
 
     for corpus in cfg["corpora"]:
-        filename = cfg["dataset"]["files"][corpus]
+        filename, id_column = _resolve_entry(cfg["dataset"]["files"][corpus])
         parquet_path = hf_hub_download(
             repo_id=cfg["dataset"]["repo_id"],
             filename=filename,
@@ -29,7 +37,7 @@ def build_manifest(cfg: Dict[str, Any], workdir: Path, mode: str) -> List[Dict[s
         # Pass 1: ids only (~few MB) to pick the sample indices.
         # Pass 2: iterate row-group batches, materialise only the picked rows to disk.
         pf = pq.ParquetFile(parquet_path)
-        ids = pf.read(columns=["id"]).column("id").to_pylist()
+        ids = pf.read(columns=[id_column]).column(id_column).to_pylist()
         n = min(sample_sizes[corpus], len(ids))
         rng = np.random.default_rng(seed)
         picked_idx = set(int(i) for i in rng.choice(len(ids), size=n, replace=False))
@@ -38,10 +46,10 @@ def build_manifest(cfg: Dict[str, Any], workdir: Path, mode: str) -> List[Dict[s
         corpus_dir.mkdir(parents=True, exist_ok=True)
 
         global_i = 0
-        for batch in pf.iter_batches(batch_size=64, columns=["id", "pdf", "xml"]):
+        for batch in pf.iter_batches(batch_size=64, columns=[id_column, "pdf", "xml"]):
             for i in range(batch.num_rows):
                 if global_i in picked_idx:
-                    rid = str(batch.column("id")[i].as_py())
+                    rid = str(batch.column(id_column)[i].as_py()).replace("/", "_")
                     pdf_path = corpus_dir / f"{rid}.pdf"
                     xml_path = corpus_dir / f"{rid}.xml"
                     if not pdf_path.exists():

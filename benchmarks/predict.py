@@ -34,9 +34,9 @@ from grobid_metadata_enricher.pipeline import (
 
 # Corpora whose gold carries body sections / captions / references and
 # therefore score the content-side gated metrics. Running the extra 3 LLM
-# calls + Crossref lookups on the others (biorxiv API JSON, scielo_preprints
-# OAI-DC) would be wasted: nothing to compare against.
-_CONTENT_CORPORA = {"ore", "pkp", "scielo_br", "scielo_mx"}
+# calls + Crossref lookups on scielo_preprints (OAI-DC) would be wasted:
+# nothing to compare against.
+_CONTENT_CORPORA = {"biorxiv", "ore", "pkp", "scielo_br", "scielo_mx"}
 
 
 def process_one(row: Dict[str, str], chat, out_dir: Path, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
