@@ -24,5 +24,25 @@ services:
       grobid:
         condition: service_healthy
 
+  benchmark:
+    build:
+      context: .
+      dockerfile: Dockerfile.bench
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - GROBID_URL=http://grobid:8070/api
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL}
+      # - AOAI_POOL_PATH=/app/runtime/aoai_pool.json
+    volumes:
+      - grobid-cache:/root/.cache
+      - ./benchmarks/runs:/app/benchmarks/runs
+      - ./runtime:/app/runtime
+    depends_on:
+      grobid:
+        condition: service_healthy
+    profiles:
+      - benchmark
+
 volumes:
   grobid-cache:
