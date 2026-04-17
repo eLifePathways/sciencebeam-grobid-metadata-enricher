@@ -1,0 +1,37 @@
+dataset:
+  repo_id: elifepathways/sciencebeam-v2-benchmarking
+  revision: main  # TODO: pin a tag (e.g. v1.0.0) once ready
+  files:
+    ore_train: ore-jats/train-00000-of-00001.parquet
+
+corpora: [ore_train]
+
+# Dataset row counts at revision main:
+#   biorxiv 158, ore 199, pkp 200, scielo_br 200, scielo_mx 112, scielo_preprints 1000
+sampling:
+  full:
+    ore_train: 199
+  smoke:
+    ore_train: 25
+
+seeds:
+  sample: 42
+  llm: 0
+
+metrics: [title_match, authors_recall, abstract_recall, keywords_recall, language_match, identifiers_recall]
+
+bootstrap:
+  n_resamples: 200
+  confidence_level: 0.95
+
+doc_concurrency: 4   # lfoppiano/grobid:0.9.0-crf saturates at ~4-6 parallel; 10 hits HTTP 503
+llm:
+  temperature: 0.0
+  max_tokens: 800
+  workers: 5
+  concurrency: 20
+
+grobid:
+  url: http://localhost:8070/api
+  pdfalto_start_page: 1
+  pdfalto_end_page: 5
