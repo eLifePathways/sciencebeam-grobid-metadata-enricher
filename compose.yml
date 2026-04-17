@@ -13,7 +13,10 @@ services:
       start_period: 60s
 
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
     ports:
       - "8000:8000"
     environment:
@@ -27,7 +30,8 @@ services:
   benchmark:
     build:
       context: .
-      dockerfile: Dockerfile.bench
+      dockerfile: Dockerfile
+      target: benchmark
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - GROBID_URL=http://grobid:8070/api
