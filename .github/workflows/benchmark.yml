@@ -38,7 +38,7 @@ jobs:
 
     services:
       grobid:
-        image: lfoppiano/grobid:0.9.0-crf
+        image: ghcr.io/elifepathways/sciencebeam-parser:0.1.18
         ports: ["8070:8070"]
         options: >-
           --health-cmd "curl -sf http://localhost:8070/api/isalive || exit 1"
