@@ -54,12 +54,12 @@ clean:
 benchmark:
 	docker compose --profile benchmark build benchmark
 	docker compose --profile benchmark run --rm benchmark \
-		uv run python -m benchmarks.predict \
+		python -m benchmarks.predict \
 			--config benchmarks/bench.yaml \
 			--mode   $(BENCHMARK_MODE) \
 			--out    benchmarks/runs/$(BENCHMARK_RUN)
 	docker compose --profile benchmark run --rm --no-deps benchmark \
-		uv run python -m benchmarks.score \
+		python -m benchmarks.score \
 			--run    benchmarks/runs/$(BENCHMARK_RUN) \
 			--config benchmarks/bench.yaml \
 			--out    benchmarks/runs/$(BENCHMARK_RUN)/report.md
