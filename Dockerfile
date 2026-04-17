@@ -1,6 +1,6 @@
 FROM lfoppiano/grobid:0.9.0-crf AS grobid
 
-FROM python:3.11-slim
+FROM python:3.11-slim AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -15,17 +15,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=grobid /opt/grobid/grobid-home/pdfalto/ /opt/pdfalto/
 RUN chmod +x /opt/pdfalto/lin-64/pdfalto
 
+ENV PDFALTO_BIN=/opt/pdfalto/lin-64/pdfalto
+ENV PYTHONUNBUFFERED=1
+
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
+ENV VENV=/app/.venv
+ENV VIRTUAL_ENV=${VENV} PYTHONUSERBASE=${VENV} PATH=${VENV}/bin:$PATH
+
 WORKDIR /app
+
+
+FROM base AS benchmark
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --extra bench --extra dev --no-install-project
+
+COPY src/ src/
+COPY benchmarks/ benchmarks/
+RUN uv sync --extra bench --extra dev
+
+
+FROM base AS runtime
+
 COPY pyproject.toml uv.lock ./
 RUN uv sync --no-dev --no-install-project
 
 COPY src/ src/
 RUN uv sync --no-dev
-
-ENV PYTHONUNBUFFERED=1
-ENV PDFALTO_BIN=/opt/pdfalto/lin-64/pdfalto
 
 EXPOSE 8000
 

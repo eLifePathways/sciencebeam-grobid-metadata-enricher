@@ -13,7 +13,15 @@ import yaml
 
 from benchmarks.gold import extract_gold
 from benchmarks.manifest import build_manifest
-from grobid_metadata_enricher.clients import AoaiPool, run_grobid, run_pdfalto
+from grobid_metadata_enricher.clients import (
+    AoaiPool,
+    DEFAULT_OPENAI_API_KEY,
+    DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_MODEL,
+    OpenAIClient,
+    run_grobid,
+    run_pdfalto,
+)
 from grobid_metadata_enricher.evaluation import evaluate_record
 from grobid_metadata_enricher.formats import (
     extract_alto_lines,
@@ -100,6 +108,8 @@ def main():
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    if os.environ.get("GROBID_URL"):
+        cfg["grobid"]["url"] = os.environ["GROBID_URL"]
     args.out.mkdir(parents=True, exist_ok=True)
     data_dir = args.out / "data"
     data_dir.mkdir(exist_ok=True)
@@ -107,12 +117,19 @@ def main():
     manifest = build_manifest(cfg, data_dir, args.mode)
     print(f"Manifest: {len(manifest)} records across {len(cfg['corpora'])} corpora", flush=True)
 
-    pool = AoaiPool(args.pool_path)
+    if DEFAULT_OPENAI_API_KEY and DEFAULT_OPENAI_MODEL:
+        raw_chat = OpenAIClient(
+            api_key=DEFAULT_OPENAI_API_KEY,
+            model=DEFAULT_OPENAI_MODEL,
+            base_url=DEFAULT_OPENAI_BASE_URL,
+        ).chat
+    else:
+        raw_chat = AoaiPool(args.pool_path).chat
     semaphore = threading.Semaphore(cfg["llm"]["concurrency"])
 
     def chat(messages, temperature=cfg["llm"]["temperature"], max_tokens=cfg["llm"]["max_tokens"]):
         with semaphore:
-            return pool.chat(messages, temperature=temperature, max_tokens=max_tokens)
+            return raw_chat(messages, temperature=temperature, max_tokens=max_tokens)
 
     out_jsonl = args.out / "per_document.jsonl"
     already_done = set()
