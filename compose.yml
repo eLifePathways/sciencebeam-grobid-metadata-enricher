@@ -35,6 +35,7 @@ services:
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - GROBID_URL=http://grobid:8070/api
+      - GROBID_TIMEOUT=${GROBID_TIMEOUT:-60}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL}
       # - AOAI_POOL_PATH=/app/runtime/aoai_pool.json
