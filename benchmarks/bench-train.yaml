@@ -5,16 +5,26 @@ dataset:
     ore:
       file: ore-jats/train-00000-of-00001.parquet
       id_column: ppr_id
+    scielo_br:
+      file: scielo_br-jats/train-00000-of-00001.parquet
+      id_column: ppr_id
+    scielo_mx:
+      file: scielo_mx-jats/train-00000-of-00001.parquet
+      id_column: ppr_id
 
-corpora: [ore]
+corpora: [ore, scielo_br, scielo_mx]
 
 # Dataset row counts at revision main:
 #   biorxiv 158, ore 199, pkp 200, scielo_br 200, scielo_mx 112, scielo_preprints 1000
 sampling:
   full:
     ore: 199
+    scielo_br: 200
+    scielo_mx: 112
   smoke:
     ore: 25
+    scielo_br: 25
+    scielo_mx: 25
 
 seeds:
   sample: 42
