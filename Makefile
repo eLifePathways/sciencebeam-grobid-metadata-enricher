@@ -1,4 +1,4 @@
-.PHONY: install lint format test serve serve-reload build start stop logs benchmark
+.PHONY: install install-observe lint format test serve serve-reload build start stop logs benchmark benchmark-cached
 
 -include .env
 export
@@ -9,9 +9,13 @@ PORT ?= 8000
 
 BENCHMARK_MODE ?= smoke
 BENCHMARK_RUN  ?= local
+CACHE_DIR      ?= .llm_cache
 
 install:
 	uv sync --extra dev
+
+install-observe:
+	uv sync --extra dev --extra observe --extra cache
 
 lint:
 	$(VENV)/bin/ruff check src/ tests/
@@ -67,6 +71,25 @@ benchmark: benchmark-build
 			--out    benchmarks/runs/$(BENCHMARK_RUN)/report.md
 	@cat benchmarks/runs/$(BENCHMARK_RUN)/report.md
 
+
+# Like benchmark but with a persistent LLM response cache mounted at CACHE_DIR.
+# First run warms the cache; subsequent runs skip LLM calls entirely.
+benchmark-cached: benchmark-build
+	mkdir -p $(CACHE_DIR)
+	docker compose --profile benchmark run --rm \
+		--volume $(PWD)/$(CACHE_DIR):/llm_cache \
+		benchmark \
+		python -m benchmarks.predict \
+			--config benchmarks/bench.yaml \
+			--mode   $(BENCHMARK_MODE) \
+			--out    benchmarks/runs/$(BENCHMARK_RUN) \
+			--cache-dir /llm_cache
+	docker compose --profile benchmark run --rm --no-deps benchmark \
+		python -m benchmarks.score \
+			--run    benchmarks/runs/$(BENCHMARK_RUN) \
+			--config benchmarks/bench.yaml \
+			--out    benchmarks/runs/$(BENCHMARK_RUN)/report.md
+	@cat benchmarks/runs/$(BENCHMARK_RUN)/report.md
 
 benchmark-train-predict:
 	docker compose --profile benchmark run --rm benchmark \

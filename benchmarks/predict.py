@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -37,7 +39,21 @@ from grobid_metadata_enricher.pipeline import (
 )
 
 
-def process_one(row: Dict[str, str], chat, out_dir: Path, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _make_langfuse() -> Optional[Any]:
+    if not os.environ.get("LANGFUSE_SECRET_KEY"):
+        return None
+    from langfuse import Langfuse
+
+    return Langfuse()
+
+
+def process_one(
+    row: Dict[str, str],
+    chat: Any,
+    out_dir: Path,
+    cfg: Dict[str, Any],
+    langfuse_client: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
     corpus = row["corpus"]
     record_id = row["record_id"]
     pdf_path = Path(row["pdf_path"])
@@ -76,10 +92,11 @@ def process_one(row: Dict[str, str], chat, out_dir: Path, cfg: Dict[str, Any]) -
             tei_fields=tei_fields, tei_abstracts=tei_abstracts,
         )
         grobid_pred = normalize_metadata(tei_fields)
+        trace = langfuse_client.trace(id=record_id, name="process_record") if langfuse_client else None
         if pred_path.exists() and pred_path.stat().st_size > 0:
             llm_pred = json.loads(pred_path.read_text(encoding="utf-8"))
         else:
-            llm_pred = build_prediction(context, chat, cfg["llm"]["workers"])
+            llm_pred = build_prediction(context, chat, cfg["llm"]["workers"], trace=trace)
             pred_path.write_text(json.dumps(llm_pred, ensure_ascii=True, indent=2), encoding="utf-8")
     except Exception as exc:
         return {"record_id": record_id, "corpus": corpus, "error": f"extraction: {exc}"}
@@ -105,6 +122,7 @@ def main():
     ap.add_argument("--mode", choices=["smoke", "full"], required=True)
     ap.add_argument("--out", required=True, type=Path, help="Output run directory")
     ap.add_argument("--pool-path", type=Path, default=Path(os.environ.get("AOAI_POOL_PATH", "aoai_pool.json")))
+    ap.add_argument("--cache-dir", type=Path, default=None)
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
@@ -118,18 +136,62 @@ def main():
     print(f"Manifest: {len(manifest)} records across {len(cfg['corpora'])} corpora", flush=True)
 
     if DEFAULT_OPENAI_API_KEY and DEFAULT_OPENAI_MODEL:
-        raw_chat = OpenAIClient(
+        llm_client: Any = OpenAIClient(
             api_key=DEFAULT_OPENAI_API_KEY,
             model=DEFAULT_OPENAI_MODEL,
             base_url=DEFAULT_OPENAI_BASE_URL,
-        ).chat
+        )
     else:
-        raw_chat = AoaiPool(args.pool_path).chat
+        llm_client = AoaiPool(args.pool_path)
     semaphore = threading.Semaphore(cfg["llm"]["concurrency"])
+    langfuse_client = _make_langfuse()
 
-    def chat(messages, temperature=cfg["llm"]["temperature"], max_tokens=cfg["llm"]["max_tokens"]):
+    if args.cache_dir:
+        import diskcache
+
+        llm_cache: Optional[Any] = diskcache.Cache(args.cache_dir)
+    else:
+        llm_cache = None
+
+    def chat(
+        messages: Any,
+        temperature: float = cfg["llm"]["temperature"],
+        max_tokens: int = cfg["llm"]["max_tokens"],
+        *,
+        task_name: str = "unknown",
+        trace: Optional[Any] = None,
+    ) -> str:
+        cache_key: Optional[str] = None
+        if llm_cache is not None:
+            key_data = json.dumps(
+                {"messages": messages, "temperature": temperature, "max_tokens": max_tokens},
+                sort_keys=True,
+                ensure_ascii=True,
+            )
+            cache_key = hashlib.sha256(key_data.encode()).hexdigest()
+            cached = llm_cache.get(cache_key)
+            if cached is not None:
+                return str(cached)
         with semaphore:
-            return raw_chat(messages, temperature=temperature, max_tokens=max_tokens)
+            start = datetime.now(timezone.utc)
+            result = llm_client.chat(messages, temperature=temperature, max_tokens=max_tokens)
+            end = datetime.now(timezone.utc)
+            if trace is not None:
+                try:
+                    trace.generation(
+                        name=task_name,
+                        model=result.model or None,
+                        input=messages,
+                        output=result.content,
+                        usage={"input": result.prompt_tokens, "output": result.completion_tokens},
+                        start_time=start,
+                        end_time=end,
+                    )
+                except Exception:
+                    pass
+            if llm_cache is not None and cache_key is not None:
+                llm_cache.set(cache_key, result.content)
+            return result.content
 
     out_jsonl = args.out / "per_document.jsonl"
     already_done = set()
@@ -146,7 +208,7 @@ def main():
     t0 = time.time()
     with out_jsonl.open("a", encoding="utf-8") as f:
         with ThreadPoolExecutor(max_workers=cfg.get("doc_concurrency", 4)) as ex:
-            futures = {ex.submit(process_one, row, chat, args.out, cfg): row for row in manifest}
+            futures = {ex.submit(process_one, row, chat, args.out, cfg, langfuse_client): row for row in manifest}
             done = 0
             for fut in as_completed(futures):
                 row = futures[fut]
@@ -175,6 +237,8 @@ def main():
                     errors.append({"record_id": row["record_id"], "corpus": row["corpus"], "error": str(exc)})
 
     elapsed = time.time() - t0
+    if langfuse_client:
+        langfuse_client.flush()
     (args.out / "errors.json").write_text(json.dumps(errors, indent=2, default=str), encoding="utf-8")
 
     run_record = {

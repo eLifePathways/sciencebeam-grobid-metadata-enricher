@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=20)
     parser.add_argument("--per-document-llm-workers", type=int, default=5)
     parser.add_argument("--llm-concurrency", type=int, default=20)
+    parser.add_argument("--cache-dir", type=Path, default=None)
     return parser
 
 
@@ -52,5 +53,6 @@ def main() -> None:
         workers=args.workers,
         per_document_llm_workers=args.per_document_llm_workers,
         llm_concurrency=args.llm_concurrency,
+        cache_dir=args.cache_dir,
     )
     run_pipeline(settings)
