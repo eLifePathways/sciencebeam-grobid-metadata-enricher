@@ -12,6 +12,13 @@ services:
       retries: 60
       start_period: 60s
 
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"
+    volumes:
+      - phoenix-data:/root/.phoenix
+
   api:
     build:
       context: .
@@ -23,9 +30,12 @@ services:
       - GROBID_URL=http://grobid:8070/api
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:6006}
     depends_on:
       grobid:
         condition: service_healthy
+      phoenix:
+        condition: service_started
 
   benchmark:
     build:
@@ -38,6 +48,7 @@ services:
       - GROBID_TIMEOUT=${GROBID_TIMEOUT:-60}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:6006}
       # - AOAI_POOL_PATH=/app/runtime/aoai_pool.json
     volumes:
       - grobid-cache:/root/.cache
@@ -46,8 +57,11 @@ services:
     depends_on:
       grobid:
         condition: service_healthy
+      phoenix:
+        condition: service_started
     profiles:
       - benchmark
 
 volumes:
   grobid-cache:
+  phoenix-data:

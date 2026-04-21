@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from .telemetry import get_tracer
+
 DEFAULT_POOL_PATH = Path(os.getenv("AOAI_POOL_PATH", "aoai_pool.json"))
 DEFAULT_GROBID_URL = os.getenv("GROBID_URL", "http://localhost:8070/api")
 DEFAULT_GROBID_TIMEOUT = int(os.getenv("GROBID_TIMEOUT", "60"))
@@ -63,43 +65,55 @@ class AoaiPool:
         max_tokens: int = 800,
         timeout_seconds: int = 60,
         max_attempts: int = 3,
+        step_name: str = "",
     ) -> str:
-        last_error: Optional[Exception] = None
-        for attempt in range(max_attempts):
-            backend = self.next_backend()
-            url = (
-                backend.endpoint.rstrip("/")
-                + f"/openai/deployments/{backend.deployment}/chat/completions"
-                + f"?api-version={backend.api_version}"
-            )
-            payload = {
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-            request = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "api-key": backend.api_key,
-                },
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                    body = json.loads(response.read().decode("utf-8"))
-                return _extract_chat_content(body)
-            except urllib.error.HTTPError as error:
-                last_error = error
-                if error.code in {429, 500, 502, 503, 504}:
+        with get_tracer().start_as_current_span(step_name or "llm") as span:
+            span.set_attribute("openinference.span.kind", "LLM")
+            span.set_attribute("input.value", json.dumps(messages, ensure_ascii=False))
+            last_error: Optional[Exception] = None
+            for attempt in range(max_attempts):
+                backend = self.next_backend()
+                url = (
+                    backend.endpoint.rstrip("/")
+                    + f"/openai/deployments/{backend.deployment}/chat/completions"
+                    + f"?api-version={backend.api_version}"
+                )
+                payload = {
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                request = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json",
+                        "api-key": backend.api_key,
+                    },
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                        body = json.loads(response.read().decode("utf-8"))
+                    content = _extract_chat_content(body)
+                    usage = body.get("usage") or {}
+                    span.set_attribute("llm.model_name", backend.deployment)
+                    span.set_attribute("output.value", content)
+                    if usage:
+                        span.set_attribute("llm.token_count.prompt", usage.get("prompt_tokens", 0))
+                        span.set_attribute("llm.token_count.completion", usage.get("completion_tokens", 0))
+                        span.set_attribute("llm.token_count.total", usage.get("total_tokens", 0))
+                    return content
+                except urllib.error.HTTPError as error:
+                    last_error = error
+                    if error.code in {429, 500, 502, 503, 504}:
+                        time.sleep(2**attempt)
+                        continue
+                    raise
+                except Exception as error:
+                    last_error = error
                     time.sleep(2**attempt)
-                    continue
-                raise
-            except Exception as error:
-                last_error = error
-                time.sleep(2**attempt)
-        raise RuntimeError(f"AOAI request failed after {max_attempts} attempts: {last_error}")
+            raise RuntimeError(f"AOAI request failed after {max_attempts} attempts: {last_error}")
 
 
 class OpenAIClient:
@@ -117,39 +131,51 @@ class OpenAIClient:
         max_tokens: int = 800,
         timeout_seconds: int = 60,
         max_attempts: int = 3,
+        step_name: str = "",
     ) -> str:
-        last_error: Optional[Exception] = None
-        for attempt in range(max_attempts):
-            url = f"{self.base_url}/chat/completions"
-            payload = {
-                "model": self.model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-            request = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.api_key}",
-                },
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                    body = json.loads(response.read().decode("utf-8"))
-                return _extract_chat_content(body)
-            except urllib.error.HTTPError as error:
-                last_error = error
-                if error.code in {429, 500, 502, 503, 504}:
+        with get_tracer().start_as_current_span(step_name or "llm") as span:
+            span.set_attribute("openinference.span.kind", "LLM")
+            span.set_attribute("llm.model_name", self.model)
+            span.set_attribute("input.value", json.dumps(messages, ensure_ascii=False))
+            last_error: Optional[Exception] = None
+            for attempt in range(max_attempts):
+                url = f"{self.base_url}/chat/completions"
+                payload = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                request = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.api_key}",
+                    },
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                        body = json.loads(response.read().decode("utf-8"))
+                    content = _extract_chat_content(body)
+                    usage = body.get("usage") or {}
+                    span.set_attribute("output.value", content)
+                    if usage:
+                        span.set_attribute("llm.token_count.prompt", usage.get("prompt_tokens", 0))
+                        span.set_attribute("llm.token_count.completion", usage.get("completion_tokens", 0))
+                        span.set_attribute("llm.token_count.total", usage.get("total_tokens", 0))
+                    return content
+                except urllib.error.HTTPError as error:
+                    last_error = error
+                    if error.code in {429, 500, 502, 503, 504}:
+                        time.sleep(2**attempt)
+                        continue
+                    raise
+                except Exception as error:
+                    last_error = error
                     time.sleep(2**attempt)
-                    continue
-                raise
-            except Exception as error:
-                last_error = error
-                time.sleep(2**attempt)
-        raise RuntimeError(f"OpenAI request failed after {max_attempts} attempts: {last_error}")
+            raise RuntimeError(f"OpenAI request failed after {max_attempts} attempts: {last_error}")
 
 
 def _extract_chat_content(payload: Dict[str, Any]) -> str:
