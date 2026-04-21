@@ -5,7 +5,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional  # noqa: F401
+from typing import Any, Callable, Dict, List, Optional, Union  # noqa: F401
 
 from fastapi import APIRouter, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
@@ -45,16 +45,16 @@ def _make_langfuse() -> Optional[Any]:
 
 
 def _make_chat() -> Optional[Callable[..., str]]:
-    client: Any = None
+    llm_client: Union[AoaiPool, OpenAIClient]
     if DEFAULT_OPENAI_API_KEY and DEFAULT_OPENAI_MODEL:
-        client = OpenAIClient(
+        llm_client = OpenAIClient(
             api_key=DEFAULT_OPENAI_API_KEY,
             model=DEFAULT_OPENAI_MODEL,
             base_url=DEFAULT_OPENAI_BASE_URL,
         )
     elif DEFAULT_POOL_PATH.exists():
-        client = AoaiPool(DEFAULT_POOL_PATH)
-    if client is None:
+        llm_client = AoaiPool(DEFAULT_POOL_PATH)
+    else:
         return None
 
     def _chat(
@@ -66,7 +66,7 @@ def _make_chat() -> Optional[Callable[..., str]]:
         trace: Optional[Any] = None,
     ) -> str:
         start = datetime.now(timezone.utc)
-        result = client.chat(messages, temperature=temperature, max_tokens=max_tokens)
+        result = llm_client.chat(messages, temperature=temperature, max_tokens=max_tokens)
         end = datetime.now(timezone.utc)
         if trace is not None:
             try:
@@ -180,7 +180,7 @@ def transform(
             context = build_document_context(paths)
             if _langfuse:
                 try:
-                    trace = _langfuse.trace(id=str(uuid.uuid4()), name="transform", metadata={"filename": filename})
+                    trace = _langfuse.trace(id=str(uuid.uuid4()), name="transform", metadata={"filename": filename})  # pylint: disable=no-member
                 except Exception:
                     pass
             prediction = build_prediction(context, _chat, per_document_llm_workers=5, trace=trace)

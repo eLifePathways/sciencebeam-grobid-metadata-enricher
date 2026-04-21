@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from .clients import (
     DEFAULT_GROBID_URL,
@@ -47,6 +47,7 @@ from .prompts import (
     OCR_CLEANUP_PROMPT,
     TEI_METADATA_PROMPT,
 )
+
 
 def _make_langfuse() -> Optional[Any]:
     if not os.getenv("LANGFUSE_SECRET_KEY"):
@@ -691,8 +692,12 @@ def build_prediction(
     tasks: Dict[str, Callable[[], Any]] = {
         "header_metadata": lambda: predict_header_metadata(context, make_task_chat("header_metadata")),
         "tei_metadata": lambda: predict_tei_metadata(context, make_task_chat("tei_metadata")),
-        "validated_tei_metadata": lambda: predict_validated_tei_metadata(context, make_task_chat("validated_tei_metadata")),
-        "abstract_from_candidates": lambda: select_abstract_from_candidates(context, make_task_chat("abstract_from_candidates")),
+        "validated_tei_metadata": lambda: predict_validated_tei_metadata(
+            context, make_task_chat("validated_tei_metadata")
+        ),
+        "abstract_from_candidates": lambda: select_abstract_from_candidates(
+            context, make_task_chat("abstract_from_candidates")
+        ),
         "ocr_cleanup": lambda: clean_ocr_text(context, make_task_chat("ocr_cleanup")),
     }
     results: Dict[str, Any] = {}
@@ -717,7 +722,9 @@ def build_prediction(
     tei_metadata = normalize_metadata(results.get("tei_metadata") or {})
     validated_tei_metadata = normalize_metadata(results.get("validated_tei_metadata") or {})
     ocr_cleanup = str(results.get("ocr_cleanup") or "")
-    ocr_abstract = extract_abstract_from_ocr(ocr_cleanup, make_task_chat("extract_abstract_from_ocr")) if ocr_cleanup else ""
+    ocr_abstract = (
+        extract_abstract_from_ocr(ocr_cleanup, make_task_chat("extract_abstract_from_ocr")) if ocr_cleanup else ""
+    )
 
     # Align with the original exp30 pipeline: start from TEI-extracted fields only,
     # and use LLM TEI outputs strictly as abstract candidates (not as field sources).
@@ -814,7 +821,7 @@ def run_pipeline(settings: PipelineSettings) -> Dict[str, Any]:
     if settings.openai_api_key or settings.openai_model:
         if not settings.openai_api_key or not settings.openai_model:
             raise ValueError("Both openai_api_key and openai_model are required when using OpenAI API.")
-        client: Any = OpenAIClient(
+        client: Union[AoaiPool, OpenAIClient] = OpenAIClient(
             api_key=settings.openai_api_key,
             model=settings.openai_model,
             base_url=settings.openai_base_url,
