@@ -75,6 +75,9 @@ disable = [
     "duplicate-code",
 ]
 
+[tool.pylint.typecheck]
+ignored-modules = ["langfuse", "diskcache"]
+
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
