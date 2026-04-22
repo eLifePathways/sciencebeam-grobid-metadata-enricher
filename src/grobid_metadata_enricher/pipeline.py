@@ -52,7 +52,7 @@ from .prompts import (
 def _make_langfuse() -> Optional[Any]:
     if not os.getenv("LANGFUSE_SECRET_KEY"):
         return None
-    from langfuse import Langfuse  # ImportError propagates if package not installed
+    from langfuse import Langfuse
 
     return Langfuse()
 
