@@ -1,4 +1,4 @@
-.PHONY: install install-observe lint format test serve serve-reload build start stop logs benchmark benchmark-cached langfuse-start langfuse-stop langfuse-logs
+.PHONY: install lint format test serve serve-reload build start stop logs benchmark benchmark-cached langfuse-start langfuse-stop langfuse-logs
 
 -include .env
 export
@@ -12,9 +12,6 @@ BENCHMARK_RUN  ?= local
 CACHE_DIR      ?= .llm_cache
 
 install:
-	uv sync --extra dev
-
-install-observe:
 	uv sync --extra dev --extra observe --extra cache
 
 lint:

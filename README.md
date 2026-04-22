@@ -180,18 +180,13 @@ The aggregated metrics are written to `metrics.json`.
 
 LLM calls are traced with [Langfuse](https://langfuse.com). You can run a local instance for free, with no usage limits.
 
-### 1. Install the observe extras
-```bash
-make install-observe
-```
-
-### 2. Start local Langfuse
+### 1. Start local Langfuse
 ```bash
 make langfuse-start
 ```
 This starts a self-hosted Langfuse + Postgres via Docker. Pre-provisioned keys are baked in — no manual setup needed.
 
-### 3. Add to `.env`
+### 2. Add to `.env`
 ```
 LANGFUSE_HOST=http://langfuse:3000
 LANGFUSE_PUBLIC_KEY=pk-lf-local
@@ -199,12 +194,12 @@ LANGFUSE_SECRET_KEY=sk-lf-local
 ```
 > `http://langfuse:3000` works because the API and Langfuse containers share the same Docker network. If you run the API outside Docker (`make serve`), use `http://localhost:3000` instead.
 
-### 4. Restart the API
+### 3. Restart the API
 ```bash
 make stop && make start
 ```
 
-### 5. View traces
+### 4. View traces
 Open [http://localhost:3000](http://localhost:3000) and log in with `admin@local.dev` / `password`.
 
 Each document processed through the `/api/transform` endpoint or the benchmark creates one trace with one generation per LLM task (title, abstract, keywords, etc.).
