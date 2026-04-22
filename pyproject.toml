@@ -38,6 +38,12 @@ bench = [
     "scipy>=1.12",
     "PyYAML>=6",
 ]
+observe = [
+    "langfuse>=2,<3",
+]
+cache = [
+    "diskcache>=5",
+]
 
 [tool.ruff]
 line-length = 120
@@ -66,7 +72,11 @@ disable = [
     "too-few-public-methods",
     "broad-exception-caught",
     "import-outside-toplevel",
+    "duplicate-code",
 ]
+
+[tool.pylint.typecheck]
+ignored-modules = ["langfuse", "diskcache"]
 
 [tool.mypy]
 python_version = "3.10"

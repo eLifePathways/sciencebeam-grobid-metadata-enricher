@@ -29,20 +29,20 @@ WORKDIR /app
 FROM base AS benchmark
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --extra bench --extra dev --no-install-project
+RUN uv sync --extra bench --extra dev --extra observe --extra cache --no-install-project
 
 COPY src/ src/
 COPY benchmarks/ benchmarks/
-RUN uv sync --extra bench --extra dev
+RUN uv sync --extra bench --extra dev --extra observe --extra cache
 
 
 FROM base AS runtime
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --no-dev --no-install-project
+RUN uv sync --no-dev --extra observe --no-install-project
 
 COPY src/ src/
-RUN uv sync --no-dev
+RUN uv sync --no-dev --extra observe
 
 EXPOSE 8000
 

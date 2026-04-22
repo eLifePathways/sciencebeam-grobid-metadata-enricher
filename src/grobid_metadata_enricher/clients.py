@@ -31,6 +31,14 @@ class AoaiBackend:
     api_version: str
 
 
+@dataclass
+class ChatResult:
+    content: str
+    prompt_tokens: int
+    completion_tokens: int
+    model: str
+
+
 class AoaiPool:
     def __init__(self, pool_path: Path) -> None:
         with pool_path.open("r", encoding="utf-8") as handle:
@@ -63,7 +71,7 @@ class AoaiPool:
         max_tokens: int = 800,
         timeout_seconds: int = 60,
         max_attempts: int = 3,
-    ) -> str:
+    ) -> ChatResult:
         last_error: Optional[Exception] = None
         for attempt in range(max_attempts):
             backend = self.next_backend()
@@ -89,7 +97,7 @@ class AoaiPool:
             try:
                 with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                     body = json.loads(response.read().decode("utf-8"))
-                return _extract_chat_content(body)
+                return _extract_chat_result(body)
             except urllib.error.HTTPError as error:
                 last_error = error
                 if error.code in {429, 500, 502, 503, 504}:
@@ -117,7 +125,7 @@ class OpenAIClient:
         max_tokens: int = 800,
         timeout_seconds: int = 60,
         max_attempts: int = 3,
-    ) -> str:
+    ) -> ChatResult:
         last_error: Optional[Exception] = None
         for attempt in range(max_attempts):
             url = f"{self.base_url}/chat/completions"
@@ -139,7 +147,7 @@ class OpenAIClient:
             try:
                 with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                     body = json.loads(response.read().decode("utf-8"))
-                return _extract_chat_content(body)
+                return _extract_chat_result(body)
             except urllib.error.HTTPError as error:
                 last_error = error
                 if error.code in {429, 500, 502, 503, 504}:
@@ -152,17 +160,23 @@ class OpenAIClient:
         raise RuntimeError(f"OpenAI request failed after {max_attempts} attempts: {last_error}")
 
 
-def _extract_chat_content(payload: Dict[str, Any]) -> str:
-    content = payload["choices"][0]["message"]["content"]
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                parts.append(str(item.get("text", "")))
-        return "".join(parts)
-    return str(content)
+def _extract_chat_result(payload: Dict[str, Any]) -> ChatResult:
+    raw = payload["choices"][0]["message"]["content"]
+    if isinstance(raw, list):
+        content = "".join(
+            str(item.get("text", ""))
+            for item in raw
+            if isinstance(item, dict) and item.get("type") == "text"
+        )
+    else:
+        content = str(raw)
+    usage = payload.get("usage") or {}
+    return ChatResult(
+        content=content,
+        prompt_tokens=int(usage.get("prompt_tokens", 0)),
+        completion_tokens=int(usage.get("completion_tokens", 0)),
+        model=str(payload.get("model", "")),
+    )
 
 
 def ensure_parent(path: Path) -> None:

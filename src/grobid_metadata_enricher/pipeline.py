@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from .clients import (
     DEFAULT_GROBID_URL,
@@ -45,6 +47,15 @@ from .prompts import (
     OCR_CLEANUP_PROMPT,
     TEI_METADATA_PROMPT,
 )
+
+
+def _make_langfuse() -> Optional[Any]:
+    if not os.getenv("LANGFUSE_SECRET_KEY"):
+        return None
+    from langfuse import Langfuse
+
+    return Langfuse()
+
 
 DISCLAIMER_RE = re.compile(
     r"(preprint|scielo|deposit|submitted|presentado|condi[cç]iones|condi[cç][aã]o|declaram|responsab)",
@@ -155,6 +166,7 @@ class PipelineSettings:
     workers: int = 20
     per_document_llm_workers: int = 5
     llm_concurrency: int = 20
+    cache_dir: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -665,13 +677,28 @@ def build_prediction(
     context: DocumentContext,
     chat: Callable[..., str],
     per_document_llm_workers: int,
+    trace: Optional[Any] = None,
 ) -> MetadataRecord:
+    def make_task_chat(task_name: str) -> Callable[..., str]:
+        def task_chat(
+            messages: List[Dict[str, str]],
+            temperature: float = 0.0,
+            max_tokens: int = 800,
+        ) -> str:
+            return chat(messages, temperature=temperature, max_tokens=max_tokens, task_name=task_name, trace=trace)
+
+        return task_chat
+
     tasks: Dict[str, Callable[[], Any]] = {
-        "header_metadata": lambda: predict_header_metadata(context, chat),
-        "tei_metadata": lambda: predict_tei_metadata(context, chat),
-        "validated_tei_metadata": lambda: predict_validated_tei_metadata(context, chat),
-        "abstract_from_candidates": lambda: select_abstract_from_candidates(context, chat),
-        "ocr_cleanup": lambda: clean_ocr_text(context, chat),
+        "header_metadata": lambda: predict_header_metadata(context, make_task_chat("header_metadata")),
+        "tei_metadata": lambda: predict_tei_metadata(context, make_task_chat("tei_metadata")),
+        "validated_tei_metadata": lambda: predict_validated_tei_metadata(
+            context, make_task_chat("validated_tei_metadata")
+        ),
+        "abstract_from_candidates": lambda: select_abstract_from_candidates(
+            context, make_task_chat("abstract_from_candidates")
+        ),
+        "ocr_cleanup": lambda: clean_ocr_text(context, make_task_chat("ocr_cleanup")),
     }
     results: Dict[str, Any] = {}
     worker_count = max(1, int(per_document_llm_workers))
@@ -695,7 +722,9 @@ def build_prediction(
     tei_metadata = normalize_metadata(results.get("tei_metadata") or {})
     validated_tei_metadata = normalize_metadata(results.get("validated_tei_metadata") or {})
     ocr_cleanup = str(results.get("ocr_cleanup") or "")
-    ocr_abstract = extract_abstract_from_ocr(ocr_cleanup, chat) if ocr_cleanup else ""
+    ocr_abstract = (
+        extract_abstract_from_ocr(ocr_cleanup, make_task_chat("extract_abstract_from_ocr")) if ocr_cleanup else ""
+    )
 
     # Align with the original exp30 pipeline: start from TEI-extracted fields only,
     # and use LLM TEI outputs strictly as abstract candidates (not as field sources).
@@ -735,7 +764,7 @@ def build_prediction(
 
     targets = keyword_target_languages(metadata.get("keywords") or [], context.lines)
     if targets:
-        metadata["keywords"] = translate_keywords(chat, metadata["keywords"], targets)
+        metadata["keywords"] = translate_keywords(make_task_chat("translate_keywords"), metadata["keywords"], targets)
 
     metadata["identifiers"] = add_scielo_identifiers(context.record_id, metadata.get("identifiers") or [])
     return normalize_metadata(metadata)
@@ -745,6 +774,7 @@ def process_record(
     row: ManifestRow,
     settings: PipelineSettings,
     chat: Callable[..., str],
+    langfuse_client: Optional[Any] = None,
 ) -> Dict[str, Any]:
     paths = build_document_paths(row, settings.output_dir)
     run_grobid(paths.pdf_path, paths.tei_path, grobid_url=settings.grobid_url)
@@ -756,11 +786,13 @@ def process_record(
         end_page=settings.pdfalto_end_page,
     )
 
+    trace = langfuse_client.trace(id=row["record_id"], name="process_record") if langfuse_client else None
+
     if paths.prediction_path.exists() and not settings.rerun:
         prediction = json.loads(paths.prediction_path.read_text(encoding="utf-8"))
     else:
         context = build_document_context(paths)
-        prediction = build_prediction(context, chat, settings.per_document_llm_workers)
+        prediction = build_prediction(context, chat, settings.per_document_llm_workers, trace=trace)
         paths.prediction_path.write_text(json.dumps(prediction, ensure_ascii=True, indent=2), encoding="utf-8")
 
     gold = extract_oai_dc(paths.xml_path)
@@ -789,7 +821,7 @@ def run_pipeline(settings: PipelineSettings) -> Dict[str, Any]:
     if settings.openai_api_key or settings.openai_model:
         if not settings.openai_api_key or not settings.openai_model:
             raise ValueError("Both openai_api_key and openai_model are required when using OpenAI API.")
-        client: Any = OpenAIClient(
+        client: Union[AoaiPool, OpenAIClient] = OpenAIClient(
             api_key=settings.openai_api_key,
             model=settings.openai_model,
             base_url=settings.openai_base_url,
@@ -797,17 +829,64 @@ def run_pipeline(settings: PipelineSettings) -> Dict[str, Any]:
     else:
         client = AoaiPool(settings.pool_path)
     semaphore = threading.Semaphore(max(1, int(settings.llm_concurrency)))
+    langfuse_client = _make_langfuse()
 
-    def chat(messages: List[Dict[str, str]], temperature: float = 0.0, max_tokens: int = 800) -> str:
+    if settings.cache_dir:
+        import diskcache
+
+        llm_cache: Optional[Any] = diskcache.Cache(settings.cache_dir)
+    else:
+        llm_cache = None
+
+    def chat(
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = 800,
+        *,
+        task_name: str = "unknown",
+        trace: Optional[Any] = None,
+    ) -> str:
+        cache_key: Optional[str] = None
+        if llm_cache is not None:
+            key_data = json.dumps(
+                {"messages": messages, "temperature": temperature, "max_tokens": max_tokens},
+                sort_keys=True,
+                ensure_ascii=True,
+            )
+            cache_key = hashlib.sha256(key_data.encode()).hexdigest()
+            cached = llm_cache.get(cache_key)
+            if cached is not None:
+                return str(cached)
         with semaphore:
-            return str(client.chat(messages, temperature=temperature, max_tokens=max_tokens))
+            start = datetime.now(timezone.utc)
+            result = client.chat(messages, temperature=temperature, max_tokens=max_tokens)
+            end = datetime.now(timezone.utc)
+            if trace is not None:
+                try:
+                    trace.generation(
+                        name=task_name,
+                        model=result.model or None,
+                        input=messages,
+                        output=result.content,
+                        usage={"input": result.prompt_tokens, "output": result.completion_tokens},
+                        start_time=start,
+                        end_time=end,
+                    )
+                except Exception:
+                    pass
+            if llm_cache is not None and cache_key is not None:
+                llm_cache.set(cache_key, result.content)
+            return result.content
 
     per_document: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
     worker_count = settings.workers or max(1, min(4, os.cpu_count() or 4))
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        future_map = {executor.submit(process_record, row, settings, chat): row["record_id"] for row in manifest}
+        future_map = {
+            executor.submit(process_record, row, settings, chat, langfuse_client): row["record_id"]
+            for row in manifest
+        }
         for future in as_completed(future_map):
             record_id = future_map[future]
             try:
@@ -835,5 +914,11 @@ def run_pipeline(settings: PipelineSettings) -> Dict[str, Any]:
         (settings.output_dir / "errors.json").write_text(
             json.dumps(errors, ensure_ascii=True, indent=2), encoding="utf-8"
         )
+
+    if langfuse_client:
+        try:
+            langfuse_client.flush()
+        except Exception:
+            pass
 
     return {"summary": summary, "errors": errors, "per_document": per_document}

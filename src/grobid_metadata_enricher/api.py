@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 import tempfile
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional  # noqa: F401
+from typing import Any, Callable, Dict, List, Optional, Union  # noqa: F401
 
 from fastapi import APIRouter, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
@@ -33,21 +36,58 @@ _grobid_url: str = DEFAULT_GROBID_URL
 _grobid_timeout: int = DEFAULT_GROBID_TIMEOUT
 
 
+def _make_langfuse() -> Optional[Any]:
+    if not os.getenv("LANGFUSE_SECRET_KEY"):
+        return None
+    from langfuse import Langfuse
+
+    return Langfuse()
+
+
 def _make_chat() -> Optional[Callable[..., str]]:
+    llm_client: Union[AoaiPool, OpenAIClient]
     if DEFAULT_OPENAI_API_KEY and DEFAULT_OPENAI_MODEL:
-        openai_client = OpenAIClient(
+        llm_client = OpenAIClient(
             api_key=DEFAULT_OPENAI_API_KEY,
             model=DEFAULT_OPENAI_MODEL,
             base_url=DEFAULT_OPENAI_BASE_URL,
         )
-        return openai_client.chat
-    if DEFAULT_POOL_PATH.exists():
-        aoai_client = AoaiPool(DEFAULT_POOL_PATH)
-        return aoai_client.chat
-    return None
+    elif DEFAULT_POOL_PATH.exists():
+        llm_client = AoaiPool(DEFAULT_POOL_PATH)
+    else:
+        return None
+
+    def _chat(
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = 800,
+        *,
+        task_name: str = "unknown",
+        trace: Optional[Any] = None,
+    ) -> str:
+        start = datetime.now(timezone.utc)
+        result = llm_client.chat(messages, temperature=temperature, max_tokens=max_tokens)
+        end = datetime.now(timezone.utc)
+        if trace is not None:
+            try:
+                trace.generation(
+                    name=task_name,
+                    model=result.model or None,
+                    input=messages,
+                    output=result.content,
+                    usage={"input": result.prompt_tokens, "output": result.completion_tokens},
+                    start_time=start,
+                    end_time=end,
+                )
+            except Exception:
+                pass
+        return result.content
+
+    return _chat
 
 
 _chat: Optional[Callable[..., str]] = _make_chat()
+_langfuse: Optional[Any] = _make_langfuse()
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -135,11 +175,23 @@ def transform(
             prediction_path=tmp_dir / "prediction.json",
         )
 
+        trace: Optional[Any] = None
         try:
             context = build_document_context(paths)
-            prediction = build_prediction(context, _chat, per_document_llm_workers=5)
+            if _langfuse:
+                try:
+                    trace = _langfuse.trace(id=str(uuid.uuid4()), name="transform", metadata={"filename": filename})  # pylint: disable=no-member
+                except Exception:
+                    pass
+            prediction = build_prediction(context, _chat, per_document_llm_workers=5, trace=trace)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Pipeline processing failed: {exc}") from exc
+        finally:
+            if _langfuse:
+                try:
+                    _langfuse.flush()
+                except Exception:
+                    pass
 
     return prediction
 
