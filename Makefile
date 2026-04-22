@@ -108,9 +108,9 @@ benchmark-train-score:
 
 benchmark-train: benchmark-build benchmark-train-predict benchmark-train-score
 
-# Local Langfuse instance (observability UI, no cloud account needed).
-# Pre-provisioned keys — add these to your .env to use locally:
-#   LANGFUSE_HOST=http://localhost:3000
+# Local Langfuse instance (observability UI, no cloud account needed, unlimited).
+# Pre-provisioned keys — add these to your .env:
+#   LANGFUSE_HOST=http://langfuse:3000   (Docker-to-Docker, same network)
 #   LANGFUSE_PUBLIC_KEY=pk-lf-local
 #   LANGFUSE_SECRET_KEY=sk-lf-local
 # UI: http://localhost:3000  login: admin@local.dev / password
