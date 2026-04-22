@@ -1,4 +1,4 @@
-.PHONY: install install-observe lint format test serve serve-reload build start stop logs benchmark benchmark-cached
+.PHONY: install install-observe lint format test serve serve-reload build start stop logs benchmark benchmark-cached langfuse-start langfuse-stop langfuse-logs
 
 -include .env
 export
@@ -107,3 +107,19 @@ benchmark-train-score:
 	@cat benchmarks/runs/train/$(BENCHMARK_RUN)/report.md
 
 benchmark-train: benchmark-build benchmark-train-predict benchmark-train-score
+
+# Local Langfuse instance (observability UI, no cloud account needed).
+# Pre-provisioned keys — add these to your .env to use locally:
+#   LANGFUSE_HOST=http://localhost:3000
+#   LANGFUSE_PUBLIC_KEY=pk-lf-local
+#   LANGFUSE_SECRET_KEY=sk-lf-local
+# UI: http://localhost:3000  login: admin@local.dev / password
+langfuse-start:
+	docker compose -f compose.langfuse.yml up -d --wait
+	@echo "Langfuse ready at http://localhost:3000  (admin@local.dev / password)"
+
+langfuse-stop:
+	docker compose -f compose.langfuse.yml down
+
+langfuse-logs:
+	docker compose -f compose.langfuse.yml logs -f
