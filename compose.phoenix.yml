@@ -16,6 +16,7 @@ services:
   api:
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:6006
+      - PHOENIX_PROJECT_NAME=sciencebeam
     depends_on:
       phoenix:
         condition: service_started
@@ -23,6 +24,7 @@ services:
   benchmark:
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:6006
+      - PHOENIX_PROJECT_NAME=sciencebeam
     depends_on:
       phoenix:
         condition: service_started
