@@ -12,15 +12,6 @@ services:
       retries: 60
       start_period: 60s
 
-  phoenix:
-    image: arizephoenix/phoenix:latest
-    ports:
-      - "6006:6006"
-    environment:
-      - ERL_MAX_PORTS=128
-    volumes:
-      - phoenix-data:/root/.phoenix
-
   api:
     build:
       context: .
@@ -38,8 +29,6 @@ services:
     depends_on:
       grobid:
         condition: service_healthy
-      phoenix:
-        condition: service_started
 
   benchmark:
     build:
@@ -62,11 +51,8 @@ services:
     depends_on:
       grobid:
         condition: service_healthy
-      phoenix:
-        condition: service_started
     profiles:
       - benchmark
 
 volumes:
   grobid-cache:
-  phoenix-data:
