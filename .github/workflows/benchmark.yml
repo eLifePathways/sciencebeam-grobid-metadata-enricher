@@ -103,19 +103,18 @@ jobs:
           done
           echo "Grobid never became healthy" >&2; exit 1
 
-      - name: Restore run cache
+      - name: Restore Grobid cache
         uses: actions/cache/restore@v4
-        id: run-cache
         with:
-          path: benchmarks/run_cache
-          key: benchmark-${{ steps.mode.outputs.mode }}-${{ hashFiles('src/grobid_metadata_enricher/**/*.py', 'benchmarks/bench.yaml') }}
+          path: benchmarks/grobid_cache
+          key: grobid-${{ steps.mode.outputs.mode }}-${{ hashFiles('.github/workflows/benchmark.yml') }}
 
       - name: Seed run directory from cache
         run: |
-          if [ -d benchmarks/run_cache ]; then
+          if [ -d benchmarks/grobid_cache ]; then
             mkdir -p benchmarks/runs/${{ github.sha }}
-            cp -r benchmarks/run_cache/. benchmarks/runs/${{ github.sha }}/
-            echo "Seeded run directory from cache"
+            rsync -a benchmarks/grobid_cache/ benchmarks/runs/${{ github.sha }}/
+            echo "Seeded Grobid outputs from cache"
           fi
 
       - name: Run predict
@@ -130,16 +129,23 @@ jobs:
             --out  benchmarks/runs/${{ github.sha }} \
             --pool-path runtime/aoai_pool.json
 
-      - name: Update run cache
+      - name: Update Grobid cache
         run: |
-          mkdir -p benchmarks/run_cache
-          cp -r benchmarks/runs/${{ github.sha }}/. benchmarks/run_cache/
+          SHA=${{ github.sha }}
+          mkdir -p benchmarks/grobid_cache
+          find "benchmarks/runs/$SHA" -type f \( -name "*.tei.xml" -o -name "*.alto.xml" \) \
+            | while read -r f; do
+                rel="${f#benchmarks/runs/$SHA/}"
+                dest="benchmarks/grobid_cache/$rel"
+                mkdir -p "$(dirname "$dest")"
+                cp "$f" "$dest"
+              done
 
-      - name: Save run cache
+      - name: Save Grobid cache
         uses: actions/cache/save@v4
         with:
-          path: benchmarks/run_cache
-          key: benchmark-${{ steps.mode.outputs.mode }}-${{ hashFiles('src/grobid_metadata_enricher/**/*.py', 'benchmarks/bench.yaml') }}
+          path: benchmarks/grobid_cache
+          key: grobid-${{ steps.mode.outputs.mode }}-${{ hashFiles('.github/workflows/benchmark.yml') }}
 
       - name: Fetch baseline run (main) if available
         id: baseline
