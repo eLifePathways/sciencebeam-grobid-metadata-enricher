@@ -122,6 +122,7 @@ jobs:
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
           AOAI_POOL_PATH: ${{ github.workspace }}/runtime/aoai_pool.json
+          GROBID_TIMEOUT: "360"
         run: |
           uv run python -m benchmarks.predict \
             --config benchmarks/bench.yaml \
