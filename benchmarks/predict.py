@@ -127,9 +127,15 @@ def main():
         raw_chat = AoaiPool(args.pool_path).chat
     semaphore = threading.Semaphore(cfg["llm"]["concurrency"])
 
-    def chat(messages, temperature=cfg["llm"]["temperature"], max_tokens=cfg["llm"]["max_tokens"]):
+    def chat(
+        messages, temperature=cfg["llm"]["temperature"],
+        max_tokens=cfg["llm"]["max_tokens"], step_name: str = "",
+    ):
         with semaphore:
-            return raw_chat(messages, temperature=temperature, max_tokens=max_tokens)
+            return raw_chat(
+                messages, temperature=temperature,
+                max_tokens=max_tokens, step_name=step_name,
+            )
 
     out_jsonl = args.out / "per_document.jsonl"
     already_done = set()
