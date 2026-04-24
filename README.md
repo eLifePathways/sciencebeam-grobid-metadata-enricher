@@ -176,6 +176,39 @@ python3 -m grobid_metadata_enricher \
 
 The aggregated metrics are written to `metrics.json`.
 
+## LLM observability with Langfuse
+
+The stack can optionally run [Langfuse](https://langfuse.com) locally to trace all LLM calls via OpenTelemetry.
+
+### Start the full stack (API + Langfuse)
+
+```bash
+make with-langfuse-start
+```
+
+This brings up the API alongside Langfuse and its dependencies (ClickHouse, PostgreSQL, Redis, MinIO). Once ready:
+- API: http://localhost:8000
+- Langfuse UI: http://localhost:3000 — log in with `admin@local.dev` / `password`
+
+The API and benchmark services automatically send OTEL traces to Langfuse when started this way.
+
+### Other targets
+
+```bash
+make with-langfuse-stop    # stop all containers (keeps volumes)
+make with-langfuse-logs    # tail logs for the full stack
+make with-langfuse-clean   # stop and delete all volumes
+```
+
+### Run benchmarks with tracing
+
+```bash
+make with-langfuse-start
+make benchmark
+```
+
+Traces appear in the Langfuse UI under the pre-provisioned **sciencebeam** project.
+
 ## Notes
 - Grobid can return 503 under load. Re-run with `--rerun` or lower `--workers` if that happens.
 - Results depend on LLM backend behavior; parallelism can change output order across backends.
