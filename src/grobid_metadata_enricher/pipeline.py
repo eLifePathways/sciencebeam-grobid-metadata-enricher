@@ -737,7 +737,10 @@ def predict_content_fields_from_alto(
 
     head_text = all_text[:max_chars]
     tail_text = all_text[-references_max_chars:]
-    full_for_tf = all_text[:tables_figures_max_chars]
+    # Skip the first max_chars of the tables/figures pass input because
+    # CONTENT_HEAD already reads that region; keeping them in would double-bill
+    # a ~1-2k-prompt-token overlap per document without adding new coverage.
+    full_for_tf = all_text[max_chars:tables_figures_max_chars]
 
     def _call(system_prompt: str, user_text: str, out_tokens: int, stage: str) -> Optional[Dict[str, Any]]:
         try:
