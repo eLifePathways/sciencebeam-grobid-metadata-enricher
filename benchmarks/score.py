@@ -220,7 +220,20 @@ def _section_tokens_summary(tokens_for_section: Optional[Dict[str, Any]]) -> str
     n_calls = int(total.get("n_calls", 0) or 0)
     if p == 0 and c == 0 and t == 0 and n_calls == 0:
         return ""
-    return f"LLM tokens: {_format_kilo(p)} prompt / {_format_kilo(c)} completion / {_format_kilo(t)} total, {n_calls} calls"
+    per_doc = tokens_for_section.get("per_doc_mean_ci") or {}
+    t_mean = (per_doc.get("total_tokens") or {}).get("mean")
+    calls_mean = (per_doc.get("n_calls") or {}).get("mean")
+    per_doc_bits: List[str] = []
+    if isinstance(t_mean, (int, float)):
+        per_doc_bits.append(f"{_format_kilo(int(round(t_mean)))} total/doc")
+    if isinstance(calls_mean, (int, float)):
+        per_doc_bits.append(f"{calls_mean:.1f} calls/doc")
+    tail = " · ".join(per_doc_bits)
+    suffix = f" · {tail}" if tail else ""
+    return (
+        f"LLM tokens: {_format_kilo(p)} prompt / {_format_kilo(c)} completion / "
+        f"{_format_kilo(t)} total, {n_calls} calls{suffix}"
+    )
 
 
 def render_markdown(result: Dict[str, Any], metrics: List[str], title: str = "Benchmark report") -> str:
