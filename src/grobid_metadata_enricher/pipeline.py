@@ -996,13 +996,16 @@ def build_prediction(
         "header_metadata": lambda: predict_header_metadata(context, chat),
         "tei_metadata_pair": lambda: _predict_tei_metadata_with_validation(context, chat),
         "abstract_from_candidates": lambda: select_abstract_from_candidates(context, chat),
-        "ocr_cleanup": lambda: clean_ocr_text(context, chat),
+        # OCR_CLEANUP was a warm-up call whose only consumer was the abstract
+        # extraction below; we now feed raw OCR text straight into
+        # extract_abstract_from_ocr, dropping one LLM call per doc.
+        "ocr_abstract": lambda: extract_abstract_from_ocr(build_ocr_input(context.lines)[:8000], chat),
     }
 
     def _default(name: str) -> Any:
         if name == "tei_metadata_pair":
             return ({}, {})
-        return "" if name in {"abstract_from_candidates", "ocr_cleanup"} else {}
+        return "" if name in {"abstract_from_candidates", "ocr_abstract"} else {}
 
     results: Dict[str, Any] = {}
     worker_count = max(1, int(per_document_llm_workers))
@@ -1026,8 +1029,7 @@ def build_prediction(
     tei_metadata_pair: Tuple[Any, Any] = results.get("tei_metadata_pair") or ({}, {})
     tei_metadata = normalize_metadata(tei_metadata_pair[0] or {})
     validated_tei_metadata = normalize_metadata(tei_metadata_pair[1] or {})
-    ocr_cleanup = str(results.get("ocr_cleanup") or "")
-    ocr_abstract = extract_abstract_from_ocr(ocr_cleanup, chat) if ocr_cleanup else ""
+    ocr_abstract = str(results.get("ocr_abstract") or "")
 
     # Align with the original exp30 pipeline: start from TEI-extracted fields only,
     # and use LLM TEI outputs strictly as abstract candidates (not as field sources).
