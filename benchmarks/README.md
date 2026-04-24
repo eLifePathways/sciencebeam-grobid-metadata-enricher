@@ -47,6 +47,15 @@ Grobid runs as a services container (`lfoppiano/grobid:0.9.0-crf`, same tag as
 `compose.yml` and `Dockerfile`). `pdfalto` is extracted from that image at runtime via
 `docker cp`; no separate install recipe needed.
 
+### Grobid output caching
+
+TEI and ALTO files produced by Grobid and pdfalto are cached in GitHub Actions across
+runs. The cache key is tied to the hash of `benchmark.yml`, which contains the Grobid
+image tag — so bumping the image tag automatically invalidates the cache and forces a
+fresh parse of all documents. The Grobid request timeout in CI is set to 360 s
+(`GROBID_TIMEOUT=360`) to accommodate cold-start JVM/model load on the first few requests.
+
+
 ## Extending to more corpora
 
 Add a new parquet to the HF dataset (e.g. `ore.parquet`), then in `bench.yaml`:
