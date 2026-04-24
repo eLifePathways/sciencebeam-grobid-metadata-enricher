@@ -16,6 +16,8 @@ services:
     image: arizephoenix/phoenix:latest
     ports:
       - "6006:6006"
+    environment:
+      - ERL_MAX_PORTS=128
     volumes:
       - phoenix-data:/root/.phoenix
 
