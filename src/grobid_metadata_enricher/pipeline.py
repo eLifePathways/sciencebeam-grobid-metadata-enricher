@@ -593,7 +593,7 @@ def translate_keywords(chat: Callable[..., str], keywords: Sequence[str], target
             ),
         },
     ]
-    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=400))
+    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=400, stage="KEYWORD_TRANSLATE"))
     translations = payload.get("translations") or {}
     merged = [str(keyword).strip() for keyword in keywords if str(keyword).strip()]
     for language in target_languages:
@@ -607,7 +607,8 @@ def predict_header_metadata(context: DocumentContext, chat: Callable[..., str]) 
         {"role": "system", "content": HEADER_METADATA_PROMPT},
         {"role": "user", "content": format_header_lines(lines)},
     ]
-    return normalize_metadata(safe_extract_json(chat(messages, temperature=0.0, max_tokens=700)))
+    raw = chat(messages, temperature=0.0, max_tokens=700, stage="HEADER_METADATA")
+    return normalize_metadata(safe_extract_json(raw))
 
 
 def predict_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> MetadataRecord:
@@ -615,7 +616,8 @@ def predict_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> 
         {"role": "system", "content": TEI_METADATA_PROMPT},
         {"role": "user", "content": context.header_text},
     ]
-    return normalize_metadata(safe_extract_json(chat(messages, temperature=0.0, max_tokens=900)))
+    raw = chat(messages, temperature=0.0, max_tokens=900, stage="TEI_METADATA")
+    return normalize_metadata(safe_extract_json(raw))
 
 
 def predict_validated_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> MetadataRecord:
@@ -631,7 +633,9 @@ def predict_validated_tei_metadata(context: DocumentContext, chat: Callable[...,
                 "content": "Validation errors: " + ", ".join(errors) + ". Correct the JSON using only the TEI snippet.",
             },
         ]
-        prediction = normalize_metadata(safe_extract_json(chat(messages, temperature=0.0, max_tokens=900)))
+        prediction = normalize_metadata(
+            safe_extract_json(chat(messages, temperature=0.0, max_tokens=900, stage="TEI_VALIDATED"))
+        )
         errors = validate_tei_metadata(prediction, context.header_text)
         attempts += 1
     return prediction
@@ -645,7 +649,7 @@ def select_abstract_from_candidates(context: DocumentContext, chat: Callable[...
         {"role": "system", "content": ABSTRACT_SELECTION_PROMPT},
         {"role": "user", "content": format_candidate_blocks(blocks)},
     ]
-    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600))
+    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600, stage="ABSTRACT_SELECT"))
     return str(payload.get("abstract", "")).strip()
 
 
@@ -654,7 +658,7 @@ def clean_ocr_text(context: DocumentContext, chat: Callable[..., str]) -> str:
         {"role": "system", "content": OCR_CLEANUP_PROMPT},
         {"role": "user", "content": build_ocr_input(context.lines)[:8000]},
     ]
-    return normalize_whitespace(chat(messages, temperature=0.0, max_tokens=800))
+    return normalize_whitespace(chat(messages, temperature=0.0, max_tokens=800, stage="OCR_CLEANUP"))
 
 
 def extract_abstract_from_ocr(clean_text: str, chat: Callable[..., str]) -> str:
@@ -662,7 +666,7 @@ def extract_abstract_from_ocr(clean_text: str, chat: Callable[..., str]) -> str:
         {"role": "system", "content": ABSTRACT_EXTRACTION_PROMPT},
         {"role": "user", "content": slice_near_abstract_marker(clean_text)},
     ]
-    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600))
+    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600, stage="ABSTRACT_FROM_OCR"))
     return str(payload.get("abstract", "")).strip()
 
 
@@ -724,7 +728,7 @@ def predict_content_fields_from_alto(
     tail_text = all_text[-references_max_chars:]
     full_for_tf = all_text[:tables_figures_max_chars]
 
-    def _call(system_prompt: str, user_text: str, out_tokens: int) -> Optional[Dict[str, Any]]:
+    def _call(system_prompt: str, user_text: str, out_tokens: int, stage: str) -> Optional[Dict[str, Any]]:
         try:
             raw = chat(
                 [
@@ -733,20 +737,32 @@ def predict_content_fields_from_alto(
                 ],
                 temperature=0.0,
                 max_tokens=out_tokens,
+                stage=stage,
             )
+        except Exception:
+            return None
+        try:
             return extract_json_from_text(raw)
         except Exception:
             return None
 
     # Run the 3 passes concurrently; merges after are serial and so stay thread-safe.
     with ThreadPoolExecutor(max_workers=3) as _content_ex:
-        head_fut = _content_ex.submit(_call, CONTENT_EXTRACTION_PROMPT, head_text, max_tokens)
+        head_fut = _content_ex.submit(_call, CONTENT_EXTRACTION_PROMPT, head_text, max_tokens, "CONTENT_HEAD")
         refs_fut = (
-            _content_ex.submit(_call, REFERENCES_EXTRACTION_PROMPT, tail_text, references_max_tokens)
+            _content_ex.submit(
+                _call, REFERENCES_EXTRACTION_PROMPT, tail_text, references_max_tokens, "CONTENT_REFERENCES"
+            )
             if len(tail_text.strip()) > 200 else None
         )
         tf_fut = (
-            _content_ex.submit(_call, TABLES_FIGURES_EXTRACTION_PROMPT, full_for_tf, tables_figures_max_tokens)
+            _content_ex.submit(
+                _call,
+                TABLES_FIGURES_EXTRACTION_PROMPT,
+                full_for_tf,
+                tables_figures_max_tokens,
+                "CONTENT_TABLES_FIGURES",
+            )
             if len(full_for_tf.strip()) > 500 else None
         )
         head_payload = head_fut.result()
@@ -1097,7 +1113,13 @@ def run_pipeline(settings: PipelineSettings) -> Dict[str, Any]:
         client = AoaiPool(settings.pool_path)
     semaphore = threading.Semaphore(max(1, int(settings.llm_concurrency)))
 
-    def chat(messages: List[Dict[str, str]], temperature: float = 0.0, max_tokens: int = 800) -> str:
+    def chat(
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = 800,
+        *,
+        stage: Optional[str] = None,  # pylint: disable=unused-argument  # noqa: ARG001
+    ) -> str:
         with semaphore:
             return str(client.chat(messages, temperature=temperature, max_tokens=max_tokens))
 

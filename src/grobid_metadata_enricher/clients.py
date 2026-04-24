@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -56,14 +56,16 @@ class AoaiPool:
             self._index += 1
         return backend
 
-    def chat(
+    def chat_with_usage(
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.0,
         max_tokens: int = 800,
         timeout_seconds: int = 60,
         max_attempts: int = 3,
-    ) -> str:
+        *,
+        stage: Optional[str] = None,  # pylint: disable=unused-argument  # noqa: ARG002
+    ) -> Tuple[str, Dict[str, int]]:
         last_error: Optional[Exception] = None
         for attempt in range(max_attempts):
             backend = self.next_backend()
@@ -89,7 +91,7 @@ class AoaiPool:
             try:
                 with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                     body = json.loads(response.read().decode("utf-8"))
-                return _extract_chat_content(body)
+                return _extract_chat_content(body), _extract_usage(body)
             except urllib.error.HTTPError as error:
                 last_error = error
                 if error.code in {429, 500, 502, 503, 504}:
@@ -101,6 +103,26 @@ class AoaiPool:
                 time.sleep(2**attempt)
         raise RuntimeError(f"AOAI request failed after {max_attempts} attempts: {last_error}")
 
+    def chat(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = 800,
+        timeout_seconds: int = 60,
+        max_attempts: int = 3,
+        *,
+        stage: Optional[str] = None,
+    ) -> str:
+        content, _ = self.chat_with_usage(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            stage=stage,
+        )
+        return content
+
 
 class OpenAIClient:
     def __init__(self, api_key: str, model: str, base_url: str = DEFAULT_OPENAI_BASE_URL) -> None:
@@ -110,14 +132,16 @@ class OpenAIClient:
         self.model = model
         self.base_url = base_url.rstrip("/")
 
-    def chat(
+    def chat_with_usage(
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.0,
         max_tokens: int = 800,
         timeout_seconds: int = 60,
         max_attempts: int = 3,
-    ) -> str:
+        *,
+        stage: Optional[str] = None,  # pylint: disable=unused-argument  # noqa: ARG002
+    ) -> Tuple[str, Dict[str, int]]:
         last_error: Optional[Exception] = None
         for attempt in range(max_attempts):
             url = f"{self.base_url}/chat/completions"
@@ -139,7 +163,7 @@ class OpenAIClient:
             try:
                 with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                     body = json.loads(response.read().decode("utf-8"))
-                return _extract_chat_content(body)
+                return _extract_chat_content(body), _extract_usage(body)
             except urllib.error.HTTPError as error:
                 last_error = error
                 if error.code in {429, 500, 502, 503, 504}:
@@ -150,6 +174,26 @@ class OpenAIClient:
                 last_error = error
                 time.sleep(2**attempt)
         raise RuntimeError(f"OpenAI request failed after {max_attempts} attempts: {last_error}")
+
+    def chat(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = 800,
+        timeout_seconds: int = 60,
+        max_attempts: int = 3,
+        *,
+        stage: Optional[str] = None,
+    ) -> str:
+        content, _ = self.chat_with_usage(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            stage=stage,
+        )
+        return content
 
 
 def _extract_chat_content(payload: Dict[str, Any]) -> str:
@@ -163,6 +207,22 @@ def _extract_chat_content(payload: Dict[str, Any]) -> str:
                 parts.append(str(item.get("text", "")))
         return "".join(parts)
     return str(content)
+
+
+def _extract_usage(payload: Dict[str, Any]) -> Dict[str, int]:
+    usage = payload.get("usage") or {}
+    prompt = int(usage.get("prompt_tokens") or 0)
+    completion = int(usage.get("completion_tokens") or 0)
+    total = int(usage.get("total_tokens") or (prompt + completion))
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    completion_details = usage.get("completion_tokens_details") or {}
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+        "cached_tokens": int(prompt_details.get("cached_tokens") or 0),
+        "reasoning_tokens": int(completion_details.get("reasoning_tokens") or 0),
+    }
 
 
 def ensure_parent(path: Path) -> None:

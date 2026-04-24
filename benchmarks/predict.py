@@ -7,7 +7,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import yaml
 
@@ -38,12 +38,115 @@ from grobid_metadata_enricher.pipeline import (
 # nothing to compare against.
 _CONTENT_CORPORA = {"biorxiv", "ore", "pkp", "scielo_br", "scielo_mx"}
 
+# Exact per-metric token attribution is not recoverable because a single LLM
+# call (e.g. HEADER_METADATA) feeds multiple evaluation metrics at once; this
+# rollup groups stages into four buckets that map cleanly onto families of
+# evaluation metrics.
+_STAGE_TO_METRIC_GROUP: Dict[str, str] = {
+    "HEADER_METADATA": "header",
+    "TEI_METADATA": "header",
+    "TEI_VALIDATED": "header",
+    "ABSTRACT_SELECT": "abstract",
+    "OCR_CLEANUP": "abstract",
+    "ABSTRACT_FROM_OCR": "abstract",
+    "KEYWORD_TRANSLATE": "keywords",
+    "CONTENT_HEAD": "content",
+    "CONTENT_REFERENCES": "content",
+    "CONTENT_TABLES_FIGURES": "content",
+}
 
-def process_one(row: Dict[str, str], chat, out_dir: Path, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+_TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "reasoning_tokens")
+
+
+class UsageRecorder:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.calls: List[Dict[str, Any]] = []
+
+    def add(self, stage: str, usage: Dict[str, int], latency_ms: float) -> None:
+        entry: Dict[str, Any] = {"stage": stage, "latency_ms": round(latency_ms, 1)}
+        entry.update(usage)
+        with self.lock:
+            self.calls.append(entry)
+
+
+def make_chat(
+    pool: AoaiPool,
+    semaphore: threading.Semaphore,
+    recorder: UsageRecorder,
+    default_temperature: float,
+    default_max_tokens: int,
+) -> Callable[..., str]:
+    def chat(
+        messages: List[Dict[str, str]],
+        temperature: float = default_temperature,
+        max_tokens: int = default_max_tokens,
+        *,
+        stage: str,
+    ) -> str:
+        with semaphore:
+            t0 = time.perf_counter()
+            content, usage = pool.chat_with_usage(messages, temperature=temperature, max_tokens=max_tokens)
+            recorder.add(stage, usage, (time.perf_counter() - t0) * 1000)
+            return content
+
+    return chat
+
+
+def summarise_tokens(recorder: UsageRecorder) -> Dict[str, Any]:
+    def _empty() -> Dict[str, int]:
+        return {field: 0 for field in _TOKEN_FIELDS}
+
+    total = _empty()
+    total_n_calls = 0
+    total_latency_ms = 0.0
+    by_stage: Dict[str, Dict[str, int]] = {}
+    by_group: Dict[str, Dict[str, int]] = {}
+
+    # Snapshot the calls list under the lock so concurrent appends cannot
+    # race with summarisation, even though summarisation is normally called
+    # after all futures have joined.
+    with recorder.lock:
+        calls = list(recorder.calls)
+
+    for call in calls:
+        stage = str(call.get("stage", "UNKNOWN"))
+        group = _STAGE_TO_METRIC_GROUP.get(stage, "other")
+        stage_bucket = by_stage.setdefault(stage, {**_empty(), "n_calls": 0})
+        group_bucket = by_group.setdefault(group, {**_empty(), "n_calls": 0})
+        for field in _TOKEN_FIELDS:
+            v = int(call.get(field, 0) or 0)
+            total[field] += v
+            stage_bucket[field] += v
+            group_bucket[field] += v
+        stage_bucket["n_calls"] += 1
+        group_bucket["n_calls"] += 1
+        total_n_calls += 1
+        total_latency_ms += float(call.get("latency_ms", 0.0) or 0.0)
+
+    total_out: Dict[str, Any] = dict(total)
+    total_out["n_calls"] = total_n_calls
+    total_out["latency_ms_sum"] = round(total_latency_ms, 1)
+    return {
+        "total": total_out,
+        "by_stage": by_stage,
+        "by_metric_group": by_group,
+        "calls": calls,
+    }
+
+
+def process_one(
+    row: Dict[str, str],
+    make_chat_fn: Callable[[UsageRecorder], Callable[..., str]],
+    out_dir: Path,
+    cfg: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
     corpus = row["corpus"]
     record_id = row["record_id"]
     pdf_path = Path(row["pdf_path"])
     xml_path = Path(row["xml_path"])
+    recorder = UsageRecorder()
+    chat = make_chat_fn(recorder)
 
     corpus_out = out_dir / corpus
     tei_path = corpus_out / "tei" / f"{record_id}.tei.xml"
@@ -121,6 +224,7 @@ def process_one(row: Dict[str, str], chat, out_dir: Path, cfg: Dict[str, Any]) -
         "record_id": record_id, "corpus": corpus,
         "grobid_metrics": grobid_metrics, "llm_metrics": llm_metrics,
         "grobid_pred": grobid_pred, "llm_pred": llm_pred, "gold": gold,
+        "tokens": summarise_tokens(recorder),
     }
 
 
@@ -143,9 +247,14 @@ def main():
     pool = AoaiPool(args.pool_path)
     semaphore = threading.Semaphore(cfg["llm"]["concurrency"])
 
-    def chat(messages, temperature=cfg["llm"]["temperature"], max_tokens=cfg["llm"]["max_tokens"]):
-        with semaphore:
-            return pool.chat(messages, temperature=temperature, max_tokens=max_tokens)
+    def make_chat_fn(recorder: UsageRecorder) -> Callable[..., str]:
+        return make_chat(
+            pool,
+            semaphore,
+            recorder,
+            default_temperature=cfg["llm"]["temperature"],
+            default_max_tokens=cfg["llm"]["max_tokens"],
+        )
 
     out_jsonl = args.out / "per_document.jsonl"
     already_done = set()
@@ -162,7 +271,7 @@ def main():
     t0 = time.time()
     with out_jsonl.open("a", encoding="utf-8") as f:
         with ThreadPoolExecutor(max_workers=cfg.get("doc_concurrency", 4)) as ex:
-            futures = {ex.submit(process_one, row, chat, args.out, cfg): row for row in manifest}
+            futures = {ex.submit(process_one, row, make_chat_fn, args.out, cfg): row for row in manifest}
             done = 0
             for fut in as_completed(futures):
                 row = futures[fut]
@@ -193,15 +302,47 @@ def main():
     elapsed = time.time() - t0
     (args.out / "errors.json").write_text(json.dumps(errors, indent=2, default=str), encoding="utf-8")
 
+    tokens_total: Dict[str, int] = {field: 0 for field in _TOKEN_FIELDS}
+    tokens_by_stage: Dict[str, Dict[str, int]] = {}
+    tokens_by_group: Dict[str, Dict[str, int]] = {}
+    total_n_calls = 0
+    n_records = 0
+    for line in out_jsonl.open():
+        if not line.strip():
+            continue
+        n_records += 1
+        rec = json.loads(line)
+        tok = rec.get("tokens") or {}
+        total = tok.get("total") or {}
+        for field in _TOKEN_FIELDS:
+            tokens_total[field] += int(total.get(field, 0) or 0)
+        total_n_calls += int(total.get("n_calls", 0) or 0)
+        for stage, stage_tok in (tok.get("by_stage") or {}).items():
+            bucket = tokens_by_stage.setdefault(stage, {**{f: 0 for f in _TOKEN_FIELDS}, "n_calls": 0})
+            for field in _TOKEN_FIELDS:
+                bucket[field] += int(stage_tok.get(field, 0) or 0)
+            bucket["n_calls"] += int(stage_tok.get("n_calls", 0) or 0)
+        for group, group_tok in (tok.get("by_metric_group") or {}).items():
+            bucket = tokens_by_group.setdefault(group, {**{f: 0 for f in _TOKEN_FIELDS}, "n_calls": 0})
+            for field in _TOKEN_FIELDS:
+                bucket[field] += int(group_tok.get(field, 0) or 0)
+            bucket["n_calls"] += int(group_tok.get("n_calls", 0) or 0)
+
+    tokens_total_out: Dict[str, Any] = dict(tokens_total)
+    tokens_total_out["n_calls"] = total_n_calls
+
     run_record = {
         "mode": args.mode,
         "config_path": str(args.config),
         "dataset": cfg["dataset"],
-        "n_records": sum(1 for _ in out_jsonl.open()),
+        "n_records": n_records,
         "n_errors": len(errors),
         "elapsed_s": round(elapsed, 1),
         "git_commit": os.environ.get("GITHUB_SHA", _git_sha()),
         "llm": {"temperature": cfg["llm"]["temperature"], "max_tokens": cfg["llm"]["max_tokens"]},
+        "tokens_total": tokens_total_out,
+        "tokens_by_stage": tokens_by_stage,
+        "tokens_by_metric_group": tokens_by_group,
     }
     (args.out / "run_record.json").write_text(json.dumps(run_record, indent=2), encoding="utf-8")
     print(f"Done. {run_record['n_records']} records, {run_record['n_errors']} errors, {elapsed:.0f}s", flush=True)
