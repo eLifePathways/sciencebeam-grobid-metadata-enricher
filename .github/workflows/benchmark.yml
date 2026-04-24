@@ -103,6 +103,21 @@ jobs:
           done
           echo "Grobid never became healthy" >&2; exit 1
 
+      - name: Restore run cache
+        uses: actions/cache/restore@v4
+        id: run-cache
+        with:
+          path: benchmarks/run_cache
+          key: benchmark-${{ steps.mode.outputs.mode }}-${{ hashFiles('src/grobid_metadata_enricher/**/*.py', 'benchmarks/bench.yaml') }}
+
+      - name: Seed run directory from cache
+        run: |
+          if [ -d benchmarks/run_cache ]; then
+            mkdir -p benchmarks/runs/${{ github.sha }}
+            cp -r benchmarks/run_cache/. benchmarks/runs/${{ github.sha }}/
+            echo "Seeded run directory from cache"
+          fi
+
       - name: Run predict
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
@@ -113,6 +128,17 @@ jobs:
             --mode ${{ steps.mode.outputs.mode }} \
             --out  benchmarks/runs/${{ github.sha }} \
             --pool-path runtime/aoai_pool.json
+
+      - name: Update run cache
+        run: |
+          mkdir -p benchmarks/run_cache
+          cp -r benchmarks/runs/${{ github.sha }}/. benchmarks/run_cache/
+
+      - name: Save run cache
+        uses: actions/cache/save@v4
+        with:
+          path: benchmarks/run_cache
+          key: benchmark-${{ steps.mode.outputs.mode }}-${{ hashFiles('src/grobid_metadata_enricher/**/*.py', 'benchmarks/bench.yaml') }}
 
       - name: Fetch baseline run (main) if available
         id: baseline
