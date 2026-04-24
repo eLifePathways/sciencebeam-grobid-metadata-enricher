@@ -25,7 +25,11 @@ def init_telemetry() -> None:
     if isinstance(trace.get_tracer_provider(), TracerProvider):
         _logger.debug("OTEL tracing already initialised")
         return
-    provider = TracerProvider(resource=Resource({SERVICE_NAME: "grobid-metadata-enricher"}))
+    resource_attrs: dict = {SERVICE_NAME: "grobid-metadata-enricher"}
+    project_name = os.getenv("PHOENIX_PROJECT_NAME")
+    if project_name:
+        resource_attrs["openinference.project.name"] = project_name
+    provider = TracerProvider(resource=Resource(resource_attrs))
     exporter = OTLPSpanExporter()  # reads OTEL_EXPORTER_OTLP_ENDPOINT from env
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)

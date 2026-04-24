@@ -1,5 +1,6 @@
 .PHONY: install lint format test serve serve-reload build start stop logs clean \
         with-langfuse-start with-langfuse-stop with-langfuse-logs with-langfuse-clean \
+        with-phoenix-start with-phoenix-stop with-phoenix-logs with-phoenix-clean \
         benchmark-build benchmark benchmark-train-predict benchmark-train-score benchmark-train
 
 -include .env
@@ -64,6 +65,22 @@ with-langfuse-logs:
 
 with-langfuse-clean:
 	$(COMPOSE_LANGFUSE) down -v
+
+
+COMPOSE_PHOENIX := docker compose -f compose.yml -f compose.phoenix.yml
+
+with-phoenix-start:
+	$(COMPOSE_PHOENIX) up -d --wait
+	@echo "Ready. API at http://localhost:8000, Phoenix at http://localhost:6006"
+
+with-phoenix-stop:
+	$(COMPOSE_PHOENIX) down
+
+with-phoenix-logs:
+	$(COMPOSE_PHOENIX) logs -f
+
+with-phoenix-clean:
+	$(COMPOSE_PHOENIX) down -v
 
 
 benchmark-build:

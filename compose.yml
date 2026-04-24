@@ -21,6 +21,7 @@ services:
       - "8000:8000"
     environment:
       - GROBID_URL=http://grobid:8070/api
+      - GROBID_TIMEOUT=${GROBID_TIMEOUT:-60}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
