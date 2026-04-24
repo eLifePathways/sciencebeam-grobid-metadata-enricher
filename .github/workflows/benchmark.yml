@@ -176,7 +176,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-run-${{ github.sha }}
-          path: benchmarks/runs/${{ github.sha }}
+          path: |
+            benchmarks/runs/${{ github.sha }}/per_document.jsonl
+            benchmarks/runs/${{ github.sha }}/run_record.json
+            benchmarks/runs/${{ github.sha }}/errors.json
+            benchmarks/runs/${{ github.sha }}/report.md
           retention-days: 30
 
       - name: Install CML via npm (avoids setup-cml's unauthenticated release fetch)
