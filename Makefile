@@ -1,4 +1,4 @@
-.PHONY: install lint format test serve serve-reload build start stop logs
+.PHONY: install lint format test serve serve-reload build start stop logs benchmark
 
 -include .env
 export
@@ -6,6 +6,9 @@ export
 VENV := .venv
 HOST ?= 127.0.0.1
 PORT ?= 8000
+
+BENCHMARK_MODE ?= smoke
+BENCHMARK_RUN  ?= local
 
 install:
 	uv sync --extra dev
@@ -43,3 +46,41 @@ logs:
 
 clean:
 	docker compose down -v
+
+benchmark-build:
+	docker compose --profile benchmark build benchmark
+
+# Run benchmark tests via docker compose (Dockerfile.bench bundles pdfalto).
+# Modes: smoke (25 docs/corpus, fast) or full (all docs).
+# Override with: make benchmark BENCHMARK_MODE=full
+# Override run dir with: make benchmark BENCHMARK_RUN=my-run
+benchmark: benchmark-build
+	docker compose --profile benchmark run --rm benchmark \
+		python -m benchmarks.predict \
+			--config benchmarks/bench.yaml \
+			--mode   $(BENCHMARK_MODE) \
+			--out    benchmarks/runs/$(BENCHMARK_RUN)
+	docker compose --profile benchmark run --rm --no-deps benchmark \
+		python -m benchmarks.score \
+			--run    benchmarks/runs/$(BENCHMARK_RUN) \
+			--config benchmarks/bench.yaml \
+			--out    benchmarks/runs/$(BENCHMARK_RUN)/report.md
+	@cat benchmarks/runs/$(BENCHMARK_RUN)/report.md
+
+
+benchmark-train-predict:
+	docker compose --profile benchmark run --rm benchmark \
+		python -m benchmarks.predict \
+			--config benchmarks/bench-train.yaml \
+			--mode   $(BENCHMARK_MODE) \
+			--out    benchmarks/runs/train/$(BENCHMARK_RUN)
+
+benchmark-train-score:
+	docker compose --profile benchmark run --rm --no-deps benchmark \
+		python -m benchmarks.score \
+			--run    benchmarks/runs/train/$(BENCHMARK_RUN) \
+			--config benchmarks/bench-train.yaml \
+			--out    benchmarks/runs/train/$(BENCHMARK_RUN)/report.md
+	@cat benchmarks/runs/train/$(BENCHMARK_RUN)/report.md
+
+benchmark-train: benchmark-build benchmark-train-predict benchmark-train-score

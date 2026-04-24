@@ -4,3 +4,8 @@
 *.egg-info
 
 *.pyc
+__pycache__/
+.DS_Store
+
+benchmarks/runs/
+benchmarks/.hf_cache/

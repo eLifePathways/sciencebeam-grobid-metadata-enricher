@@ -7,13 +7,21 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import yaml
 
 from benchmarks.gold import extract_gold
 from benchmarks.manifest import build_manifest
-from grobid_metadata_enricher.clients import AoaiPool, run_grobid, run_pdfalto
+from grobid_metadata_enricher.clients import (
+    AoaiPool,
+    DEFAULT_OPENAI_API_KEY,
+    DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_MODEL,
+    OpenAIClient,
+    run_grobid,
+    run_pdfalto,
+)
 from grobid_metadata_enricher.evaluation import evaluate_record
 from grobid_metadata_enricher.formats import (
     extract_alto_lines,
@@ -71,7 +79,7 @@ class UsageRecorder:
 
 
 def make_chat(
-    pool: AoaiPool,
+    client: Union[AoaiPool, OpenAIClient],
     semaphore: threading.Semaphore,
     recorder: UsageRecorder,
     default_temperature: float,
@@ -86,7 +94,7 @@ def make_chat(
     ) -> str:
         with semaphore:
             t0 = time.perf_counter()
-            content, usage = pool.chat_with_usage(messages, temperature=temperature, max_tokens=max_tokens)
+            content, usage = client.chat_with_usage(messages, temperature=temperature, max_tokens=max_tokens)
             recorder.add(stage, usage, (time.perf_counter() - t0) * 1000)
             return content
 
@@ -237,6 +245,8 @@ def main():
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    if os.environ.get("GROBID_URL"):
+        cfg["grobid"]["url"] = os.environ["GROBID_URL"]
     args.out.mkdir(parents=True, exist_ok=True)
     data_dir = args.out / "data"
     data_dir.mkdir(exist_ok=True)
@@ -244,12 +254,20 @@ def main():
     manifest = build_manifest(cfg, data_dir, args.mode)
     print(f"Manifest: {len(manifest)} records across {len(cfg['corpora'])} corpora", flush=True)
 
-    pool = AoaiPool(args.pool_path)
+    client: Union[AoaiPool, OpenAIClient]
+    if DEFAULT_OPENAI_API_KEY and DEFAULT_OPENAI_MODEL:
+        client = OpenAIClient(
+            api_key=DEFAULT_OPENAI_API_KEY,
+            model=DEFAULT_OPENAI_MODEL,
+            base_url=DEFAULT_OPENAI_BASE_URL,
+        )
+    else:
+        client = AoaiPool(args.pool_path)
     semaphore = threading.Semaphore(cfg["llm"]["concurrency"])
 
     def make_chat_fn(recorder: UsageRecorder) -> Callable[..., str]:
         return make_chat(
-            pool,
+            client,
             semaphore,
             recorder,
             default_temperature=cfg["llm"]["temperature"],
