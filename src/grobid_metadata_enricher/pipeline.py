@@ -621,8 +621,19 @@ def predict_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> 
 
 
 def predict_validated_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> MetadataRecord:
-    prediction = predict_tei_metadata(context, chat)
-    errors = validate_tei_metadata(prediction, context.header_text)
+    return _predict_tei_metadata_with_validation(context, chat)[1]
+
+
+def _predict_tei_metadata_with_validation(
+    context: DocumentContext, chat: Callable[..., str]
+) -> Tuple[MetadataRecord, MetadataRecord]:
+    # Share the TEI_METADATA first-attempt call between the raw and validated
+    # predictions; only fire TEI_VALIDATED retries if validation actually fails.
+    first = predict_tei_metadata(context, chat)
+    errors = validate_tei_metadata(first, context.header_text)
+    if not errors:
+        return first, first
+    current = first
     attempts = 1
     while errors and attempts < 3:
         messages = [
@@ -633,12 +644,12 @@ def predict_validated_tei_metadata(context: DocumentContext, chat: Callable[...,
                 "content": "Validation errors: " + ", ".join(errors) + ". Correct the JSON using only the TEI snippet.",
             },
         ]
-        prediction = normalize_metadata(
+        current = normalize_metadata(
             safe_extract_json(chat(messages, temperature=0.0, max_tokens=900, stage="TEI_VALIDATED"))
         )
-        errors = validate_tei_metadata(prediction, context.header_text)
+        errors = validate_tei_metadata(current, context.header_text)
         attempts += 1
-    return prediction
+    return first, current
 
 
 def select_abstract_from_candidates(context: DocumentContext, chat: Callable[..., str]) -> str:
@@ -983,11 +994,16 @@ def build_prediction(
 ) -> MetadataRecord:
     tasks: Dict[str, Callable[[], Any]] = {
         "header_metadata": lambda: predict_header_metadata(context, chat),
-        "tei_metadata": lambda: predict_tei_metadata(context, chat),
-        "validated_tei_metadata": lambda: predict_validated_tei_metadata(context, chat),
+        "tei_metadata_pair": lambda: _predict_tei_metadata_with_validation(context, chat),
         "abstract_from_candidates": lambda: select_abstract_from_candidates(context, chat),
         "ocr_cleanup": lambda: clean_ocr_text(context, chat),
     }
+
+    def _default(name: str) -> Any:
+        if name == "tei_metadata_pair":
+            return ({}, {})
+        return "" if name in {"abstract_from_candidates", "ocr_cleanup"} else {}
+
     results: Dict[str, Any] = {}
     worker_count = max(1, int(per_document_llm_workers))
     if worker_count == 1:
@@ -995,7 +1011,7 @@ def build_prediction(
             try:
                 results[name] = task()
             except Exception:
-                results[name] = "" if name in {"abstract_from_candidates", "ocr_cleanup"} else {}
+                results[name] = _default(name)
     else:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             future_map = {executor.submit(task): name for name, task in tasks.items()}
@@ -1004,11 +1020,12 @@ def build_prediction(
                 try:
                     results[name] = future.result()
                 except Exception:
-                    results[name] = "" if name in {"abstract_from_candidates", "ocr_cleanup"} else {}
+                    results[name] = _default(name)
 
     header_metadata = normalize_metadata(results.get("header_metadata") or {})
-    tei_metadata = normalize_metadata(results.get("tei_metadata") or {})
-    validated_tei_metadata = normalize_metadata(results.get("validated_tei_metadata") or {})
+    tei_metadata_pair: Tuple[Any, Any] = results.get("tei_metadata_pair") or ({}, {})
+    tei_metadata = normalize_metadata(tei_metadata_pair[0] or {})
+    validated_tei_metadata = normalize_metadata(tei_metadata_pair[1] or {})
     ocr_cleanup = str(results.get("ocr_cleanup") or "")
     ocr_abstract = extract_abstract_from_ocr(ocr_cleanup, chat) if ocr_cleanup else ""
 
