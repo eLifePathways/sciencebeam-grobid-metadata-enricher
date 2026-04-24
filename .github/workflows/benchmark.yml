@@ -131,12 +131,28 @@ jobs:
             --out benchmarks/runs/${{ github.sha }}/report.md \
             $BASELINE_ARG
 
+      - name: Prune per-doc intermediates before upload
+        # Keep only the summary files that the PR comment and the next run's
+        # `--baseline` fetch actually consume (per_document.jsonl for paired
+        # comparison, plus the aggregate reports). The per-corpus tei/alto/
+        # predictions trees plus the HF dataset staging dir are ~99% of the
+        # run directory and nothing downstream reads them — they were pushing
+        # each artefact to ~900 files and hitting the org storage quota.
+        run: |
+          set -eu
+          RUN_DIR="benchmarks/runs/${{ github.sha }}"
+          rm -rf "$RUN_DIR/data"
+          find "$RUN_DIR" -mindepth 2 -maxdepth 3 -type d \
+            \( -name tei -o -name alto -o -name predictions \) \
+            -exec rm -rf {} +
+          echo "post-prune file count: $(find "$RUN_DIR" -type f | wc -l)"
+
       - name: Upload run artefacts
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-run-${{ github.sha }}
           path: benchmarks/runs/${{ github.sha }}
-          retention-days: 30
+          retention-days: 14
 
       - name: Install CML via npm (avoids setup-cml's unauthenticated release fetch)
         run: npm install -g @dvcorg/cml
