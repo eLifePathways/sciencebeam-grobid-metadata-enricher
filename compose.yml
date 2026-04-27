@@ -21,8 +21,11 @@ services:
       - "8000:8000"
     environment:
       - GROBID_URL=http://grobid:8070/api
+      - GROBID_TIMEOUT=${GROBID_TIMEOUT:-60}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
     depends_on:
       grobid:
         condition: service_healthy
@@ -35,8 +38,11 @@ services:
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - GROBID_URL=http://grobid:8070/api
+      - GROBID_TIMEOUT=${GROBID_TIMEOUT:-60}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
       # - AOAI_POOL_PATH=/app/runtime/aoai_pool.json
     volumes:
       - grobid-cache:/root/.cache

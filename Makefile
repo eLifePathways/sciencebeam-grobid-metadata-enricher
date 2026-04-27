@@ -1,4 +1,7 @@
-.PHONY: install lint format test serve serve-reload build start stop logs benchmark
+.PHONY: install lint format test serve serve-reload build start stop logs clean \
+        with-langfuse-start with-langfuse-stop with-langfuse-logs with-langfuse-clean \
+        with-phoenix-start with-phoenix-stop with-phoenix-logs with-phoenix-clean \
+        benchmark-build benchmark benchmark-train-predict benchmark-train-score benchmark-train
 
 -include .env
 export
@@ -47,12 +50,47 @@ logs:
 clean:
 	docker compose down -v
 
+
+COMPOSE_LANGFUSE := docker compose -f compose.yml -f compose.langfuse.yml
+
+with-langfuse-start:
+	$(COMPOSE_LANGFUSE) up -d --wait
+	@echo "Ready. API at http://localhost:8000, Langfuse at http://localhost:3000 (admin@local.dev / password)"
+
+with-langfuse-stop:
+	$(COMPOSE_LANGFUSE) down
+
+with-langfuse-logs:
+	$(COMPOSE_LANGFUSE) logs -f
+
+with-langfuse-clean:
+	$(COMPOSE_LANGFUSE) down -v
+
+
+COMPOSE_PHOENIX := docker compose -f compose.yml -f compose.phoenix.yml
+
+with-phoenix-start:
+	$(COMPOSE_PHOENIX) up -d --wait
+	@echo "Ready. API at http://localhost:8000, Phoenix at http://localhost:6006"
+
+with-phoenix-stop:
+	$(COMPOSE_PHOENIX) down
+
+with-phoenix-logs:
+	$(COMPOSE_PHOENIX) logs -f
+
+with-phoenix-clean:
+	$(COMPOSE_PHOENIX) down -v
+
+
+benchmark-build:
+	docker compose --profile benchmark build benchmark
+
 # Run benchmark tests via docker compose (Dockerfile.bench bundles pdfalto).
 # Modes: smoke (25 docs/corpus, fast) or full (all docs).
 # Override with: make benchmark BENCHMARK_MODE=full
 # Override run dir with: make benchmark BENCHMARK_RUN=my-run
-benchmark:
-	docker compose --profile benchmark build benchmark
+benchmark: benchmark-build
 	docker compose --profile benchmark run --rm benchmark \
 		python -m benchmarks.predict \
 			--config benchmarks/bench.yaml \
@@ -64,3 +102,21 @@ benchmark:
 			--config benchmarks/bench.yaml \
 			--out    benchmarks/runs/$(BENCHMARK_RUN)/report.md
 	@cat benchmarks/runs/$(BENCHMARK_RUN)/report.md
+
+
+benchmark-train-predict:
+	docker compose --profile benchmark run --rm benchmark \
+		python -m benchmarks.predict \
+			--config benchmarks/bench-train.yaml \
+			--mode   $(BENCHMARK_MODE) \
+			--out    benchmarks/runs/train/$(BENCHMARK_RUN)
+
+benchmark-train-score:
+	docker compose --profile benchmark run --rm --no-deps benchmark \
+		python -m benchmarks.score \
+			--run    benchmarks/runs/train/$(BENCHMARK_RUN) \
+			--config benchmarks/bench-train.yaml \
+			--out    benchmarks/runs/train/$(BENCHMARK_RUN)/report.md
+	@cat benchmarks/runs/train/$(BENCHMARK_RUN)/report.md
+
+benchmark-train: benchmark-build benchmark-train-predict benchmark-train-score

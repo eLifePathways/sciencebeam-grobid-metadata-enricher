@@ -45,6 +45,7 @@ from .prompts import (
     OCR_CLEANUP_PROMPT,
     TEI_METADATA_PROMPT,
 )
+from .telemetry import get_tracer, init_telemetry, with_otel_context
 
 DISCLAIMER_RE = re.compile(
     r"(preprint|scielo|deposit|submitted|presentado|condi[cç]iones|condi[cç][aã]o|declaram|responsab)",
@@ -588,7 +589,7 @@ def translate_keywords(chat: Callable[..., str], keywords: Sequence[str], target
             ),
         },
     ]
-    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=400))
+    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=400, step_name="keyword_translation"))
     translations = payload.get("translations") or {}
     merged = [str(keyword).strip() for keyword in keywords if str(keyword).strip()]
     for language in target_languages:
@@ -602,7 +603,9 @@ def predict_header_metadata(context: DocumentContext, chat: Callable[..., str]) 
         {"role": "system", "content": HEADER_METADATA_PROMPT},
         {"role": "user", "content": format_header_lines(lines)},
     ]
-    return normalize_metadata(safe_extract_json(chat(messages, temperature=0.0, max_tokens=700)))
+    return normalize_metadata(
+        safe_extract_json(chat(messages, temperature=0.0, max_tokens=700, step_name="header_metadata"))
+    )
 
 
 def predict_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> MetadataRecord:
@@ -610,7 +613,9 @@ def predict_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> 
         {"role": "system", "content": TEI_METADATA_PROMPT},
         {"role": "user", "content": context.header_text},
     ]
-    return normalize_metadata(safe_extract_json(chat(messages, temperature=0.0, max_tokens=900)))
+    return normalize_metadata(
+        safe_extract_json(chat(messages, temperature=0.0, max_tokens=900, step_name="tei_metadata"))
+    )
 
 
 def predict_validated_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> MetadataRecord:
@@ -626,7 +631,9 @@ def predict_validated_tei_metadata(context: DocumentContext, chat: Callable[...,
                 "content": "Validation errors: " + ", ".join(errors) + ". Correct the JSON using only the TEI snippet.",
             },
         ]
-        prediction = normalize_metadata(safe_extract_json(chat(messages, temperature=0.0, max_tokens=900)))
+        prediction = normalize_metadata(
+            safe_extract_json(chat(messages, temperature=0.0, max_tokens=900, step_name="validated_tei_metadata"))
+        )
         errors = validate_tei_metadata(prediction, context.header_text)
         attempts += 1
     return prediction
@@ -640,7 +647,7 @@ def select_abstract_from_candidates(context: DocumentContext, chat: Callable[...
         {"role": "system", "content": ABSTRACT_SELECTION_PROMPT},
         {"role": "user", "content": format_candidate_blocks(blocks)},
     ]
-    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600))
+    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600, step_name="abstract_selection"))
     return str(payload.get("abstract", "")).strip()
 
 
@@ -649,7 +656,7 @@ def clean_ocr_text(context: DocumentContext, chat: Callable[..., str]) -> str:
         {"role": "system", "content": OCR_CLEANUP_PROMPT},
         {"role": "user", "content": build_ocr_input(context.lines)[:8000]},
     ]
-    return normalize_whitespace(chat(messages, temperature=0.0, max_tokens=800))
+    return normalize_whitespace(chat(messages, temperature=0.0, max_tokens=800, step_name="ocr_cleanup"))
 
 
 def extract_abstract_from_ocr(clean_text: str, chat: Callable[..., str]) -> str:
@@ -657,11 +664,22 @@ def extract_abstract_from_ocr(clean_text: str, chat: Callable[..., str]) -> str:
         {"role": "system", "content": ABSTRACT_EXTRACTION_PROMPT},
         {"role": "user", "content": slice_near_abstract_marker(clean_text)},
     ]
-    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600))
+    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600, step_name="abstract_from_ocr"))
     return str(payload.get("abstract", "")).strip()
 
 
 def build_prediction(
+    context: DocumentContext,
+    chat: Callable[..., str],
+    per_document_llm_workers: int,
+) -> MetadataRecord:
+    with get_tracer().start_as_current_span("document_prediction") as span:
+        span.set_attribute("openinference.span.kind", "CHAIN")
+        span.set_attribute("document.id", context.record_id)
+        return _build_prediction_inner(context, chat, per_document_llm_workers)
+
+
+def _build_prediction_inner(
     context: DocumentContext,
     chat: Callable[..., str],
     per_document_llm_workers: int,
@@ -683,7 +701,7 @@ def build_prediction(
                 results[name] = "" if name in {"abstract_from_candidates", "ocr_cleanup"} else {}
     else:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            future_map = {executor.submit(task): name for name, task in tasks.items()}
+            future_map = {executor.submit(with_otel_context(task)): name for name, task in tasks.items()}
             for future in as_completed(future_map):
                 name = future_map[future]
                 try:
@@ -774,6 +792,7 @@ def process_record(
 
 
 def run_pipeline(settings: PipelineSettings) -> Dict[str, Any]:
+    init_telemetry()
     ensure_dir(settings.output_dir / "tei")
     ensure_dir(settings.output_dir / "alto")
     ensure_dir(settings.output_dir / "predictions")
@@ -798,9 +817,11 @@ def run_pipeline(settings: PipelineSettings) -> Dict[str, Any]:
         client = AoaiPool(settings.pool_path)
     semaphore = threading.Semaphore(max(1, int(settings.llm_concurrency)))
 
-    def chat(messages: List[Dict[str, str]], temperature: float = 0.0, max_tokens: int = 800) -> str:
+    def chat(
+        messages: List[Dict[str, str]], temperature: float = 0.0, max_tokens: int = 800, step_name: str = ""
+    ) -> str:
         with semaphore:
-            return str(client.chat(messages, temperature=temperature, max_tokens=max_tokens))
+            return str(client.chat(messages, temperature=temperature, max_tokens=max_tokens, step_name=step_name))
 
     per_document: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []

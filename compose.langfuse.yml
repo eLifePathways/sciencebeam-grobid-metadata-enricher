@@ -1,0 +1,166 @@
+# Self-hosted Langfuse v3 backend for local development.
+# Usage: docker compose -f compose.yml -f compose.langfuse.yml up
+#
+# Pre-provisioned credentials:
+#   Public key:  pk-lf-local
+#   Secret key:  sk-lf-local
+#   UI:          http://localhost:3000  (admin@local.dev / password)
+#
+# OTEL traces are forwarded to Langfuse via:
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://langfuse:3000/api/public/otel
+#   OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic cGstbGYtbG9jYWw6c2stbGYtbG9jYWw=
+#   (cGstbGYtbG9jYWw6c2stbGYtbG9jYWw= is base64("pk-lf-local:sk-lf-local"))
+
+x-langfuse-env: &langfuse-env
+  DATABASE_URL: postgresql://postgres:postgres@langfuse-db:5432/langfuse
+  NEXTAUTH_SECRET: local-dev-secret
+  SALT: local-dev-salt
+  ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+  NEXTAUTH_URL: http://localhost:3000
+  TELEMETRY_ENABLED: "false"
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:clickhouse@langfuse-clickhouse:9000/default
+  CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: clickhouse
+  REDIS_HOST: langfuse-cache
+  REDIS_PORT: "6379"
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: us-east-1
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_INIT_ORG_ID: local
+  LANGFUSE_INIT_ORG_NAME: Local
+  LANGFUSE_INIT_PROJECT_ID: local-project
+  LANGFUSE_INIT_PROJECT_NAME: sciencebeam
+  LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-local
+  LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-local
+  LANGFUSE_INIT_USER_EMAIL: admin@local.dev
+  LANGFUSE_INIT_USER_NAME: admin
+  LANGFUSE_INIT_USER_PASSWORD: password
+
+services:
+  langfuse-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:24.6
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - langfuse-clickhouse:/var/lib/clickhouse
+      - ./langfuse/clickhouse/keeper.xml:/etc/clickhouse-server/config.d/keeper.xml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  langfuse-cache:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  langfuse-minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    volumes:
+      - langfuse-minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  langfuse-minio-init:
+    image: minio/mc
+    depends_on:
+      langfuse-minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://langfuse-minio:9000 minio miniosecret &&
+      mc mb --ignore-existing local/langfuse
+      "
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-cache:
+        condition: service_healthy
+      langfuse-minio-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *langfuse-env
+
+  langfuse:
+    image: langfuse/langfuse:3
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-cache:
+        condition: service_healthy
+      langfuse-minio-init:
+        condition: service_completed_successfully
+      langfuse-worker:
+        condition: service_started
+    ports:
+      - "3000:3000"
+    environment:
+      <<: *langfuse-env
+
+  api:
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://langfuse:3000/api/public/otel
+      - OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic cGstbGYtbG9jYWw6c2stbGYtbG9jYWw=
+    depends_on:
+      langfuse:
+        condition: service_started
+
+  benchmark:
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://langfuse:3000/api/public/otel
+      - OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic cGstbGYtbG9jYWw6c2stbGYtbG9jYWw=
+    depends_on:
+      langfuse:
+        condition: service_started
+
+volumes:
+  langfuse-db:
+  langfuse-clickhouse:
+  langfuse-minio:

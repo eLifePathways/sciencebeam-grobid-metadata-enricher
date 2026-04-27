@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Callable, Optional  # noqa: F401
+from typing import Any, AsyncGenerator, Callable, Optional  # noqa: F401
 
 from fastapi import APIRouter, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
@@ -21,12 +22,21 @@ from .clients import (
     run_pdfalto,
 )
 from .pipeline import DocumentPaths, build_document_context, build_prediction
+from .telemetry import init_telemetry
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    init_telemetry()
+    yield
+
 
 app = FastAPI(
     title="ScienceBeam V2 API",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
+    lifespan=_lifespan,
 )
 router = APIRouter(prefix="/api")
 _grobid_url: str = DEFAULT_GROBID_URL
