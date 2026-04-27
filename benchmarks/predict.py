@@ -129,12 +129,12 @@ def main():
 
     def chat(
         messages, temperature=cfg["llm"]["temperature"],
-        max_tokens=cfg["llm"]["max_tokens"], step_name: str = "",
+        max_tokens=cfg["llm"]["max_tokens"]
     ):
         with semaphore:
             return raw_chat(
                 messages, temperature=temperature,
-                max_tokens=max_tokens, step_name=step_name,
+                max_tokens=max_tokens
             )
 
     out_jsonl = args.out / "per_document.jsonl"
