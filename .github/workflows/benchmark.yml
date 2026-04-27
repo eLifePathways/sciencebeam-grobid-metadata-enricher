@@ -24,7 +24,8 @@ jobs:
     # Trigger rules:
     #  - workflow_dispatch: always runs, uses inputs.mode
     #  - PR labeled 'benchmark:smoke': smoke
-    #  - schedule / push to main: full
+    #  - push to main: smoke
+    #  - schedule: full
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && github.event.label.name == 'benchmark:smoke') ||
@@ -61,7 +62,8 @@ jobs:
           case "${{ github.event_name }}" in
             workflow_dispatch) echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT" ;;
             pull_request)      echo "mode=smoke"            >> "$GITHUB_OUTPUT" ;;
-            *)                 echo "mode=full"             >> "$GITHUB_OUTPUT" ;;
+            push)              echo "mode=smoke"            >> "$GITHUB_OUTPUT" ;;
+            *)                 echo "mode=smoke"            >> "$GITHUB_OUTPUT" ;;
           esac
 
       - uses: astral-sh/setup-uv@v5
