@@ -103,16 +103,49 @@ jobs:
           done
           echo "Grobid never became healthy" >&2; exit 1
 
+      - name: Restore Grobid cache
+        uses: actions/cache/restore@v4
+        with:
+          path: benchmarks/grobid_cache
+          key: grobid-${{ steps.mode.outputs.mode }}-${{ hashFiles('.github/workflows/benchmark.yml') }}
+
+      - name: Seed run directory from cache
+        run: |
+          if [ -d benchmarks/grobid_cache ]; then
+            mkdir -p benchmarks/runs/${{ github.sha }}
+            rsync -a benchmarks/grobid_cache/ benchmarks/runs/${{ github.sha }}/
+            echo "Seeded Grobid outputs from cache"
+          fi
+
       - name: Run predict
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
           AOAI_POOL_PATH: ${{ github.workspace }}/runtime/aoai_pool.json
+          GROBID_TIMEOUT: "360"
         run: |
           uv run python -m benchmarks.predict \
             --config benchmarks/bench.yaml \
             --mode ${{ steps.mode.outputs.mode }} \
             --out  benchmarks/runs/${{ github.sha }} \
             --pool-path runtime/aoai_pool.json
+
+      - name: Update Grobid cache
+        run: |
+          SHA=${{ github.sha }}
+          mkdir -p benchmarks/grobid_cache
+          find "benchmarks/runs/$SHA" -type f \( -name "*.tei.xml" -o -name "*.alto.xml" \) \
+            | while read -r f; do
+                rel="${f#benchmarks/runs/$SHA/}"
+                dest="benchmarks/grobid_cache/$rel"
+                mkdir -p "$(dirname "$dest")"
+                cp "$f" "$dest"
+              done
+
+      - name: Save Grobid cache
+        uses: actions/cache/save@v4
+        with:
+          path: benchmarks/grobid_cache
+          key: grobid-${{ steps.mode.outputs.mode }}-${{ hashFiles('.github/workflows/benchmark.yml') }}
 
       - name: Fetch baseline run (main) if available
         id: baseline
@@ -149,7 +182,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-run-${{ github.sha }}
-          path: benchmarks/runs/${{ github.sha }}
+          path: |
+            benchmarks/runs/${{ github.sha }}/per_document.jsonl
+            benchmarks/runs/${{ github.sha }}/run_record.json
+            benchmarks/runs/${{ github.sha }}/errors.json
+            benchmarks/runs/${{ github.sha }}/report.md
           retention-days: 30
 
       - name: Install CML via npm (avoids setup-cml's unauthenticated release fetch)
