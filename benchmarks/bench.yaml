@@ -31,19 +31,19 @@ corpora:
 #   biorxiv 158, ore 199, pkp 200, scielo_br 200, scielo_mx 112, scielo_preprints 1000
 sampling:
   full:
-    biorxiv: 158
+    # biorxiv: 158
     ore: 199
     pkp: 200
     scielo_br: 200
     scielo_mx: 112
-    scielo_preprints: 1000
+    scielo_preprints-jats: 1000
   smoke:
-    biorxiv: 25
+    # biorxiv: 25
     ore: 25
     pkp: 25
     scielo_br: 25
     scielo_mx: 25
-    scielo_preprints: 25
+    scielo_preprints-jats: 25
 
 seeds:
   sample: 42
