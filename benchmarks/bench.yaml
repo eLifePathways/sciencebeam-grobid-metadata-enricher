@@ -16,7 +16,7 @@ dataset:
       file: scielo_mx-jats/validation-00000-of-00001.parquet
       id_column: ppr_id
     scielo_preprints-jats:
-      file: scielo_preprints-jats/validation-00000-of-00001.parquet
+      file: scielo-preprints-jats/validation-00000-of-00001.parquet
       id_column: ppr_id
 
 corpora:
