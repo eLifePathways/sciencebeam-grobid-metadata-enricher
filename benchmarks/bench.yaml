@@ -2,7 +2,7 @@ dataset:
   repo_id: elifepathways/sciencebeam-v2-benchmarking
   revision: main  # TODO: pin a tag (e.g. v1.0.0) once ready
   files:
-    biorxiv: biorxiv.parquet
+    biorxiv: {file: biorxiv-jats.parquet, id_column: ppr_id}
     ore: ore.parquet
     pkp: pkp.parquet
     scielo_br: scielo_br.parquet
@@ -33,7 +33,19 @@ seeds:
   sample: 42
   llm: 0
 
-metrics: [title_match, authors_recall, abstract_recall, keywords_recall, language_match, identifiers_recall]
+metrics:
+  - title_match
+  - authors_recall
+  - abstract_recall
+  - keywords_recall
+  - language_match
+  - identifiers_recall
+  # Gated on the corresponding gold keys; silent for biorxiv / scielo_preprints.
+  - body_section_recall
+  - figure_caption_recall
+  - table_caption_recall
+  - reference_recall
+  - reference_recall_combined
 
 bootstrap:
   n_resamples: 200
@@ -43,10 +55,10 @@ doc_concurrency: 4   # lfoppiano/grobid:0.9.0-crf saturates at ~4-6 parallel; 10
 llm:
   temperature: 0.0
   max_tokens: 800
-  workers: 5
-  concurrency: 20
+  workers: 10        # build_prediction internal pool
+  concurrency: 40    # global AoaiPool semaphore: 4 docs * up to 8 concurrent LLM calls + headroom
 
 grobid:
   url: http://localhost:8070/api
   pdfalto_start_page: 1
-  pdfalto_end_page: 5
+  pdfalto_end_page: 99   # full-doc ALTO: content passes need tail text for references and late captions

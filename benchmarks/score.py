@@ -55,6 +55,67 @@ def _paired(vals_a: np.ndarray, vals_b: np.ndarray) -> Optional[float]:
         return None
 
 
+_TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "reasoning_tokens")
+
+
+def _empty_token_bucket() -> Dict[str, int]:
+    return {field: 0 for field in _TOKEN_FIELDS} | {"n_calls": 0}
+
+
+def _aggregate_tokens(
+    rows: List[Dict[str, Any]],
+    n_resamples: int,
+    confidence_level: float,
+) -> Dict[str, Any]:
+    # Sum per-stage and per-metric-group token usage across rows, and report
+    # per-document total means with 95% bootstrap CIs so run-to-run
+    # comparisons are possible. Rows without a `tokens` key are tolerated
+    # (legacy jsonl from older benchmarks): they are treated as zero usage.
+    total_bucket = _empty_token_bucket()
+    by_stage: Dict[str, Dict[str, int]] = {}
+    by_group: Dict[str, Dict[str, int]] = {}
+    per_doc_totals: Dict[str, List[float]] = {field: [] for field in _TOKEN_FIELDS}
+    per_doc_n_calls: List[float] = []
+
+    for r in rows:
+        tok = r.get("tokens") or {}
+        total = tok.get("total") or {}
+        for field in _TOKEN_FIELDS:
+            v = int(total.get(field, 0) or 0)
+            total_bucket[field] += v
+            per_doc_totals[field].append(float(v))
+        n_calls = int(total.get("n_calls", 0) or 0)
+        total_bucket["n_calls"] += n_calls
+        per_doc_n_calls.append(float(n_calls))
+        for stage, stage_tok in (tok.get("by_stage") or {}).items():
+            bucket = by_stage.setdefault(stage, _empty_token_bucket())
+            for field in _TOKEN_FIELDS:
+                bucket[field] += int(stage_tok.get(field, 0) or 0)
+            bucket["n_calls"] += int(stage_tok.get("n_calls", 0) or 0)
+        for group, group_tok in (tok.get("by_metric_group") or {}).items():
+            bucket = by_group.setdefault(group, _empty_token_bucket())
+            for field in _TOKEN_FIELDS:
+                bucket[field] += int(group_tok.get(field, 0) or 0)
+            bucket["n_calls"] += int(group_tok.get("n_calls", 0) or 0)
+
+    per_doc_mean_ci: Dict[str, Dict[str, float]] = {}
+    for field in _TOKEN_FIELDS:
+        arr = np.asarray(per_doc_totals[field], dtype=float)
+        mean, lo, hi = _ci(arr, n_resamples, confidence_level)
+        per_doc_mean_ci[field] = {"mean": mean, "ci_low": lo, "ci_high": hi}
+    n_calls_arr = np.asarray(per_doc_n_calls, dtype=float)
+    mean, lo, hi = _ci(n_calls_arr, n_resamples, confidence_level)
+    per_doc_mean_ci["n_calls"] = {"mean": mean, "ci_low": lo, "ci_high": hi}
+
+    return {
+        "n": len(rows),
+        "total": total_bucket,
+        "per_doc_mean_ci": per_doc_mean_ci,
+        "by_stage": by_stage,
+        "by_metric_group": by_group,
+    }
+
+
 def score(
     rows: List[Dict[str, Any]],
     metrics: List[str],
@@ -115,18 +176,88 @@ def score(
         subset = [r for r in rows if r["corpus"] == c]
         base = [b for b in (baseline_rows or []) if b["corpus"] == c] or None
         sections[c] = _section(subset, base)
+
+    tokens_section: Dict[str, Any] = {
+        "overall": _aggregate_tokens(rows, n_resamples, confidence_level),
+    }
+    for c in corpora:
+        subset = [r for r in rows if r["corpus"] == c]
+        tokens_section[c] = _aggregate_tokens(subset, n_resamples, confidence_level)
+    sections["tokens"] = tokens_section
     return sections
 
 
+_METRIC_TO_TOKEN_GROUP: Dict[str, str] = {
+    "title_match": "header",
+    "authors_recall": "header",
+    "abstract_recall": "abstract",
+    "keywords_recall": "keywords",
+    "identifiers_recall": "header",
+    "language_match": "header",
+    "body_section_recall": "content",
+    "figure_caption_recall": "content",
+    "table_caption_recall": "content",
+    "reference_recall": "content",
+    "reference_recall_combined": "content",
+}
+
+
+def _format_kilo(n: int) -> str:
+    # Compact rendering for header summaries: 1234 -> "1.2k", 999 -> "999".
+    if n >= 1000:
+        return f"{n / 1000:.1f}k"
+    return str(int(n))
+
+
+def _section_tokens_summary(tokens_for_section: Optional[Dict[str, Any]]) -> str:
+    # Empty, compact summary when no token data is present so legacy runs render unchanged.
+    if not tokens_for_section:
+        return ""
+    total = tokens_for_section.get("total") or {}
+    p = int(total.get("prompt_tokens", 0) or 0)
+    c = int(total.get("completion_tokens", 0) or 0)
+    t = int(total.get("total_tokens", 0) or 0)
+    n_calls = int(total.get("n_calls", 0) or 0)
+    if p == 0 and c == 0 and t == 0 and n_calls == 0:
+        return ""
+    per_doc = tokens_for_section.get("per_doc_mean_ci") or {}
+    t_mean = (per_doc.get("total_tokens") or {}).get("mean")
+    calls_mean = (per_doc.get("n_calls") or {}).get("mean")
+    per_doc_bits: List[str] = []
+    if isinstance(t_mean, (int, float)):
+        per_doc_bits.append(f"{_format_kilo(int(round(t_mean)))} total/doc")
+    if isinstance(calls_mean, (int, float)):
+        per_doc_bits.append(f"{calls_mean:.1f} calls/doc")
+    tail = " · ".join(per_doc_bits)
+    suffix = f" · {tail}" if tail else ""
+    return (
+        f"LLM tokens: {_format_kilo(p)} prompt / {_format_kilo(c)} completion / "
+        f"{_format_kilo(t)} total, {n_calls} calls{suffix}"
+    )
+
+
 def render_markdown(result: Dict[str, Any], metrics: List[str], title: str = "Benchmark report") -> str:
+    tokens_by_section = result.get("tokens") or {}
     lines = [f"# {title}", ""]
     for section_name, section in result.items():
-        lines.append(f"## {section_name} (N={section['n']})")
+        if section_name == "tokens":
+            continue  # rendered separately below so the metric tables stay unchanged
+        section_tokens = tokens_by_section.get(section_name) if tokens_by_section else None
+        token_summary = _section_tokens_summary(section_tokens)
+        header_line = f"## {section_name} (N={section['n']})"
+        if token_summary:
+            header_line += f" — {token_summary}"
+        lines.append(header_line)
         lines.append("")
         has_baseline = any("vs_baseline" in section["metrics"][m] for m in metrics)
+        # Attach a per-metric tokens column (summing by the metric's stage-group) when
+        # token data is available for this section. Unknown metric mappings render "—".
+        has_tokens = bool(section_tokens and (section_tokens.get("by_metric_group") or {}))
         header = ["Metric", "Grobid (95% CI)", "LLM (95% CI)", "Δ LLM−Grobid", "Wilcoxon p"]
         if has_baseline:
             header += ["Δ vs baseline", "p vs baseline"]
+        if has_tokens:
+            header += ["Prompt tok", "Completion tok"]
         lines.append("| " + " | ".join(header) + " |")
         lines.append("|" + "|".join(["---"] * len(header)) + "|")
         for m in metrics:
@@ -146,9 +277,76 @@ def render_markdown(result: Dict[str, Any], metrics: List[str], title: str = "Be
                     row.append(f"{vb['wilcoxon_p']:.3g}" if vb['wilcoxon_p'] is not None else "n/a")
                 else:
                     row += ["n/a", "n/a"]
+            if has_tokens:
+                group = _METRIC_TO_TOKEN_GROUP.get(m)
+                by_group = (section_tokens or {}).get("by_metric_group") or {}
+                bucket = by_group.get(group) if group else None
+                if bucket:
+                    row.append(_format_kilo(int(bucket.get("prompt_tokens", 0) or 0)))
+                    row.append(_format_kilo(int(bucket.get("completion_tokens", 0) or 0)))
+                else:
+                    row += ["—", "—"]
             lines.append("| " + " | ".join(row) + " |")
         lines.append("")
+
+    tokens = result.get("tokens")
+    if tokens:
+        lines.extend(_render_tokens_markdown(tokens))
     return "\n".join(lines)
+
+
+def _render_tokens_markdown(tokens: Dict[str, Any]) -> List[str]:
+    lines: List[str] = ["## Tokens", ""]
+    overall = tokens.get("overall") or {}
+    total = overall.get("total") or {}
+    per_doc = overall.get("per_doc_mean_ci") or {}
+    lines.append(f"Overall (N={overall.get('n', 0)}):")
+    lines.append("")
+    lines.append("| Field | Sum | Per-doc mean (95% CI) |")
+    lines.append("|---|---|---|")
+    for field in _TOKEN_FIELDS:
+        mc = per_doc.get(field) or {"mean": float("nan"), "ci_low": float("nan"), "ci_high": float("nan")}
+        lines.append(
+            f"| {field} | {int(total.get(field, 0))} "
+            f"| {mc['mean']:.1f} [{mc['ci_low']:.1f}, {mc['ci_high']:.1f}] |"
+        )
+    nc = per_doc.get("n_calls") or {"mean": float("nan"), "ci_low": float("nan"), "ci_high": float("nan")}
+    lines.append(
+        f"| n_calls | {int(total.get('n_calls', 0))} "
+        f"| {nc['mean']:.1f} [{nc['ci_low']:.1f}, {nc['ci_high']:.1f}] |"
+    )
+    lines.append("")
+
+    by_stage = overall.get("by_stage") or {}
+    if by_stage:
+        lines.append("### Per stage (overall sums)")
+        lines.append("")
+        lines.append("| Stage | Prompt | Completion | Total | Cached | Reasoning | n_calls |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for stage in sorted(by_stage):
+            b = by_stage[stage]
+            lines.append(
+                f"| {stage} | {int(b.get('prompt_tokens', 0))} | {int(b.get('completion_tokens', 0))} "
+                f"| {int(b.get('total_tokens', 0))} | {int(b.get('cached_tokens', 0))} "
+                f"| {int(b.get('reasoning_tokens', 0))} | {int(b.get('n_calls', 0))} |"
+            )
+        lines.append("")
+
+    by_group = overall.get("by_metric_group") or {}
+    if by_group:
+        lines.append("### Per metric group (overall sums)")
+        lines.append("")
+        lines.append("| Group | Prompt | Completion | Total | Cached | Reasoning | n_calls |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for group in sorted(by_group):
+            b = by_group[group]
+            lines.append(
+                f"| {group} | {int(b.get('prompt_tokens', 0))} | {int(b.get('completion_tokens', 0))} "
+                f"| {int(b.get('total_tokens', 0))} | {int(b.get('cached_tokens', 0))} "
+                f"| {int(b.get('reasoning_tokens', 0))} | {int(b.get('n_calls', 0))} |"
+            )
+        lines.append("")
+    return lines
 
 
 def main():

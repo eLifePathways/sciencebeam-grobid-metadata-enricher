@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 from __future__ import annotations
 
 import json
@@ -40,9 +41,12 @@ from .formats import (
 from .prompts import (
     ABSTRACT_EXTRACTION_PROMPT,
     ABSTRACT_SELECTION_PROMPT,
+    CONTENT_EXTRACTION_PROMPT,
     HEADER_METADATA_PROMPT,
     KEYWORD_TRANSLATION_PROMPT,
     OCR_CLEANUP_PROMPT,
+    REFERENCES_EXTRACTION_PROMPT,
+    TABLES_FIGURES_EXTRACTION_PROMPT,
     TEI_METADATA_PROMPT,
 )
 from .telemetry import get_tracer, init_telemetry, with_otel_context
@@ -150,7 +154,8 @@ class PipelineSettings:
     grobid_url: str = DEFAULT_GROBID_URL
     pdfalto_bin: Path = DEFAULT_PDFALTO_BIN
     pdfalto_start_page: int = 1
-    pdfalto_end_page: int = 2
+    pdfalto_end_page: int = 99
+    pdfalto_header_end_page: int = 2
     limit: Optional[int] = None
     rerun: bool = False
     workers: int = 20
@@ -589,7 +594,7 @@ def translate_keywords(chat: Callable[..., str], keywords: Sequence[str], target
             ),
         },
     ]
-    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=400, step_name="keyword_translation"))
+    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=400, step_name="KEYWORD_TRANSLATE"))
     translations = payload.get("translations") or {}
     merged = [str(keyword).strip() for keyword in keywords if str(keyword).strip()]
     for language in target_languages:
@@ -603,9 +608,8 @@ def predict_header_metadata(context: DocumentContext, chat: Callable[..., str]) 
         {"role": "system", "content": HEADER_METADATA_PROMPT},
         {"role": "user", "content": format_header_lines(lines)},
     ]
-    return normalize_metadata(
-        safe_extract_json(chat(messages, temperature=0.0, max_tokens=700, step_name="header_metadata"))
-    )
+    raw = chat(messages, temperature=0.0, max_tokens=700, step_name="HEADER_METADATA")
+    return normalize_metadata(safe_extract_json(raw))
 
 
 def predict_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> MetadataRecord:
@@ -613,14 +617,24 @@ def predict_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> 
         {"role": "system", "content": TEI_METADATA_PROMPT},
         {"role": "user", "content": context.header_text},
     ]
-    return normalize_metadata(
-        safe_extract_json(chat(messages, temperature=0.0, max_tokens=900, step_name="tei_metadata"))
-    )
+    raw = chat(messages, temperature=0.0, max_tokens=900, step_name="TEI_METADATA")
+    return normalize_metadata(safe_extract_json(raw))
 
 
 def predict_validated_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> MetadataRecord:
-    prediction = predict_tei_metadata(context, chat)
-    errors = validate_tei_metadata(prediction, context.header_text)
+    return _predict_tei_metadata_with_validation(context, chat)[1]
+
+
+def _predict_tei_metadata_with_validation(
+    context: DocumentContext, chat: Callable[..., str]
+) -> Tuple[MetadataRecord, MetadataRecord]:
+    # Share the TEI_METADATA first-attempt call between the raw and validated
+    # predictions; only fire TEI_VALIDATED retries if validation actually fails.
+    first = predict_tei_metadata(context, chat)
+    errors = validate_tei_metadata(first, context.header_text)
+    if not errors:
+        return first, first
+    current = first
     attempts = 1
     while errors and attempts < 3:
         messages = [
@@ -631,12 +645,12 @@ def predict_validated_tei_metadata(context: DocumentContext, chat: Callable[...,
                 "content": "Validation errors: " + ", ".join(errors) + ". Correct the JSON using only the TEI snippet.",
             },
         ]
-        prediction = normalize_metadata(
-            safe_extract_json(chat(messages, temperature=0.0, max_tokens=900, step_name="validated_tei_metadata"))
+        current = normalize_metadata(
+            safe_extract_json(chat(messages, temperature=0.0, max_tokens=900, step_name="TEI_VALIDATED"))
         )
-        errors = validate_tei_metadata(prediction, context.header_text)
+        errors = validate_tei_metadata(current, context.header_text)
         attempts += 1
-    return prediction
+    return first, current
 
 
 def select_abstract_from_candidates(context: DocumentContext, chat: Callable[..., str]) -> str:
@@ -647,7 +661,7 @@ def select_abstract_from_candidates(context: DocumentContext, chat: Callable[...
         {"role": "system", "content": ABSTRACT_SELECTION_PROMPT},
         {"role": "user", "content": format_candidate_blocks(blocks)},
     ]
-    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600, step_name="abstract_selection"))
+    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600, step_name="ABSTRACT_SELECT"))
     return str(payload.get("abstract", "")).strip()
 
 
@@ -656,7 +670,7 @@ def clean_ocr_text(context: DocumentContext, chat: Callable[..., str]) -> str:
         {"role": "system", "content": OCR_CLEANUP_PROMPT},
         {"role": "user", "content": build_ocr_input(context.lines)[:8000]},
     ]
-    return normalize_whitespace(chat(messages, temperature=0.0, max_tokens=800, step_name="ocr_cleanup"))
+    return normalize_whitespace(chat(messages, temperature=0.0, max_tokens=800, step_name="OCR_CLEANUP"))
 
 
 def extract_abstract_from_ocr(clean_text: str, chat: Callable[..., str]) -> str:
@@ -664,8 +678,317 @@ def extract_abstract_from_ocr(clean_text: str, chat: Callable[..., str]) -> str:
         {"role": "system", "content": ABSTRACT_EXTRACTION_PROMPT},
         {"role": "user", "content": slice_near_abstract_marker(clean_text)},
     ]
-    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600, step_name="abstract_from_ocr"))
+    payload = safe_extract_json(chat(messages, temperature=0.0, max_tokens=600, step_name="ABSTRACT_FROM_OCR"))
     return str(payload.get("abstract", "")).strip()
+
+
+_CONTENT_DOI_RE = re.compile(r"10\.\d{4,9}/[^\s<>\"'\\)]+", re.IGNORECASE)
+
+
+def predict_content_fields_from_alto(
+    lines: Sequence[LayoutLine],
+    chat: Callable[..., str],
+    max_chars: int = 25000,
+    max_tokens: int = 2000,
+    references_max_chars: int = 40000,
+    references_max_tokens: int = 4500,
+    tables_figures_max_chars: int = 110000,
+    tables_figures_max_tokens: int = 3500,
+) -> MetadataRecord:
+    """Extract body/figure/table/reference content from full-paper ALTO text.
+
+    Runs three LLM passes so long papers do not lose content past an input cap:
+      head pass over the first max_chars (body sections, inline figures/tables,
+      references visible in the head);
+      references pass over the last references_max_chars (reference list at the
+      tail of the paper, with a larger output budget so long bibliographies are
+      not truncated);
+      tables/figures pass over the first tables_figures_max_chars (tables and
+      figures scattered through the body; a wider window than the head pass so
+      captions past page 20 or so are still covered).
+
+    Each pass appends into shared per-key buckets with whitespace-normalised
+    case-insensitive dedup. Callers typically merge the result with the TEI
+    content_fields via merge_content_fields.
+    """
+    all_text = "\n".join(line["text"] for line in lines if line.get("text"))
+    empty: MetadataRecord = {
+        "body_sections": [],
+        "figure_captions": [],
+        "table_captions": [],
+        "reference_titles": [],
+        "reference_dois": [],
+    }
+    if not all_text.strip():
+        return empty
+
+    body_sections: List[str] = []
+    figure_captions: List[str] = []
+    table_captions: List[str] = []
+    reference_titles: List[str] = []
+    reference_dois: List[str] = []
+
+    def _dedupe_add(target: List[str], items: List[str]) -> None:
+        seen = {" ".join(x.split()).lower() for x in target}
+        for it in items:
+            k = " ".join(str(it).split()).lower()
+            if k and k not in seen:
+                target.append(it)
+                seen.add(k)
+
+    head_text = all_text[:max_chars]
+    tail_text = all_text[-references_max_chars:]
+    # Skip the first max_chars of the tables/figures pass input because
+    # CONTENT_HEAD already reads that region; keeping them in would double-bill
+    # a ~1-2k-prompt-token overlap per document without adding new coverage.
+    full_for_tf = all_text[max_chars:tables_figures_max_chars]
+
+    def _call(system_prompt: str, user_text: str, out_tokens: int, step_name: str) -> Optional[Dict[str, Any]]:
+        try:
+            raw = chat(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_text},
+                ],
+                temperature=0.0,
+                max_tokens=out_tokens,
+                step_name=step_name,
+            )
+        except Exception:
+            return None
+        try:
+            return extract_json_from_text(raw)
+        except Exception:
+            return None
+
+    # Run the 3 passes concurrently; merges after are serial and so stay thread-safe.
+    with ThreadPoolExecutor(max_workers=3) as _content_ex:
+        head_fut = _content_ex.submit(_call, CONTENT_EXTRACTION_PROMPT, head_text, max_tokens, "CONTENT_HEAD")
+        refs_fut = (
+            _content_ex.submit(
+                _call, REFERENCES_EXTRACTION_PROMPT, tail_text, references_max_tokens, "CONTENT_REFERENCES"
+            )
+            if len(tail_text.strip()) > 200 else None
+        )
+        tf_fut = (
+            _content_ex.submit(
+                _call,
+                TABLES_FIGURES_EXTRACTION_PROMPT,
+                full_for_tf,
+                tables_figures_max_tokens,
+                "CONTENT_TABLES_FIGURES",
+            )
+            if len(full_for_tf.strip()) > 500 else None
+        )
+        head_payload = head_fut.result()
+        refs_payload = refs_fut.result() if refs_fut is not None else None
+        tf_payload = tf_fut.result() if tf_fut is not None else None
+
+    if head_payload:
+        for key, bucket in (
+            ("body_sections", body_sections),
+            ("figure_captions", figure_captions),
+            ("table_captions", table_captions),
+            ("reference_titles", reference_titles),
+        ):
+            values = head_payload.get(key) or []
+            if isinstance(values, list):
+                _dedupe_add(bucket, [str(v).strip() for v in values if str(v).strip()])
+
+    if refs_payload:
+        refs = refs_payload.get("references") or []
+        if isinstance(refs, list):
+            new_titles: List[str] = []
+            new_dois: List[str] = []
+            for r in refs:
+                if not isinstance(r, dict):
+                    continue
+                title = str(r.get("title") or "").strip()
+                if title:
+                    new_titles.append(title)
+                doi_candidate = str(r.get("doi") or "").strip()
+                if doi_candidate:
+                    m = _CONTENT_DOI_RE.search(doi_candidate)
+                    if m:
+                        new_dois.append(m.group(0).lower().rstrip(".,;)"))
+            _dedupe_add(reference_titles, new_titles)
+            _dedupe_add(reference_dois, new_dois)
+
+    if tf_payload:
+        tables_list = tf_payload.get("tables") or []
+        figures_list = tf_payload.get("figures") or []
+        if isinstance(tables_list, list):
+            _dedupe_add(table_captions, [str(t).strip() for t in tables_list if str(t).strip()])
+        if isinstance(figures_list, list):
+            _dedupe_add(figure_captions, [str(t).strip() for t in figures_list if str(t).strip()])
+
+    return {
+        "body_sections": body_sections,
+        "figure_captions": figure_captions,
+        "table_captions": table_captions,
+        "reference_titles": reference_titles,
+        "reference_dois": reference_dois,
+    }
+
+
+def merge_content_fields(tei_content: MetadataRecord, llm_content: MetadataRecord) -> MetadataRecord:
+    """Merge TEI content_fields with LLM content_fields.
+
+    For each list field the result starts from the TEI list and appends LLM
+    items not already present by whitespace-normalised lowercase key.
+    Preserves the extractor that found each item first.
+    """
+    out: MetadataRecord = dict(tei_content)
+    for key in ("body_sections", "figure_captions", "table_captions", "reference_titles", "reference_dois"):
+        tei_items = list(tei_content.get(key) or [])
+        llm_items = list(llm_content.get(key) or [])
+        seen = {" ".join(str(i).split()).lower(): None for i in tei_items}
+        for item in llm_items:
+            key_str = " ".join(str(item).split()).lower()
+            if key_str and key_str not in seen:
+                tei_items.append(item)
+                seen[key_str] = None
+        out[key] = tei_items
+    return out
+
+
+def enrich_references_with_crossref(
+    pred: MetadataRecord,
+    tei_path: Path,
+    crossref_client: Any = None,
+    max_lookups: int = 80,
+    max_workers: int = 5,
+) -> MetadataRecord:
+    """Augment pred reference fields by looking up any GROBID-parsed biblStruct
+    that has a title but no idno DOI via Crossref.
+
+    Mirrors the europe_pmc_jats enrichment pattern in corpus-pipeline: no LLM
+    involved; Crossref returns a DOI and a canonical title for matches above
+    the client's internal Jaccard threshold. Recovered items are merged into
+    pred['reference_dois'] and pred['reference_titles'] with dedup.
+    """
+    import xml.etree.ElementTree as _ET
+
+    from .crossref import CrossrefClient as _CrossrefClient
+
+    if crossref_client is None:
+        crossref_client = _CrossrefClient()
+
+    try:
+        tree = _ET.parse(tei_path)
+    except Exception:
+        return pred
+
+    out = dict(pred)
+    out["reference_dois"] = list(pred.get("reference_dois") or [])
+    out["reference_titles"] = list(pred.get("reference_titles") or [])
+
+    def _strip(tag: str) -> str:
+        return tag.split("}", 1)[1] if "}" in tag else tag
+
+    def _text(el: Any) -> str:
+        return " ".join(el.itertext()).strip() if el is not None else ""
+
+    signatures: List[Dict[str, Any]] = []
+    for bibl in tree.getroot().iter():
+        if _strip(bibl.tag) != "biblStruct":
+            continue
+        has_doi = False
+        for inner in bibl.iter():
+            if _strip(inner.tag) == "idno" and (inner.get("type") or "").lower() == "doi" and _text(inner):
+                has_doi = True
+                break
+        if has_doi:
+            continue
+
+        title = ""
+        for inner in bibl.iter():
+            if _strip(inner.tag) == "title" and (inner.get("level") or "").lower() == "a":
+                title = _text(inner)
+                if title:
+                    break
+        if not title:
+            for inner in bibl.iter():
+                if _strip(inner.tag) == "title":
+                    title = _text(inner)
+                    if title:
+                        break
+        if not title or len(title) < 15:
+            continue
+
+        authors: List[str] = []
+        for pers in bibl.iter():
+            if _strip(pers.tag) != "persName":
+                continue
+            surname = ""
+            for ch in pers:
+                if _strip(ch.tag) == "surname":
+                    surname = _text(ch)
+            if surname:
+                authors.append(surname)
+            if len(authors) >= 4:
+                break
+
+        journal = ""
+        for inner in bibl.iter():
+            if _strip(inner.tag) == "title" and (inner.get("level") or "").lower() in {"j", "m"}:
+                journal = _text(inner)
+                if journal:
+                    break
+
+        year = ""
+        for inner in bibl.iter():
+            if _strip(inner.tag) == "date":
+                year = (inner.get("when") or _text(inner) or "").strip()
+                m = re.search(r"\b(19|20)\d{2}\b", year)
+                if m:
+                    year = m.group(0)
+                if year:
+                    break
+
+        signatures.append({"title": title, "authors": authors, "year": year, "journal": journal})
+        if len(signatures) >= max_lookups:
+            break
+
+    if not signatures:
+        return out
+
+    def _lookup(sig: Dict[str, Any]) -> Dict[str, str]:
+        result: Dict[str, str] = crossref_client.lookup(
+            title=sig["title"], authors=sig["authors"], year=sig["year"], journal=sig["journal"]
+        )
+        return result
+
+    recovered_dois: List[str] = []
+    recovered_titles: List[str] = []
+    if max_workers <= 1:
+        for sig in signatures:
+            hit = _lookup(sig)
+            if hit.get("doi"):
+                recovered_dois.append(hit["doi"])
+            if hit.get("title"):
+                recovered_titles.append(hit["title"])
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            for hit in ex.map(_lookup, signatures):
+                if hit.get("doi"):
+                    recovered_dois.append(hit["doi"])
+                if hit.get("title"):
+                    recovered_titles.append(hit["title"])
+
+    existing_dois = set(out["reference_dois"])
+    for d in recovered_dois:
+        if d not in existing_dois:
+            out["reference_dois"].append(d)
+            existing_dois.add(d)
+
+    existing_title_keys = {" ".join(t.split()).lower() for t in out["reference_titles"]}
+    for t in recovered_titles:
+        key = " ".join(t.split()).lower()
+        if key and key not in existing_title_keys:
+            out["reference_titles"].append(t)
+            existing_title_keys.add(key)
+    return out
 
 
 def build_prediction(
@@ -686,11 +1009,19 @@ def _build_prediction_inner(
 ) -> MetadataRecord:
     tasks: Dict[str, Callable[[], Any]] = {
         "header_metadata": lambda: predict_header_metadata(context, chat),
-        "tei_metadata": lambda: predict_tei_metadata(context, chat),
-        "validated_tei_metadata": lambda: predict_validated_tei_metadata(context, chat),
+        "tei_metadata_pair": lambda: _predict_tei_metadata_with_validation(context, chat),
         "abstract_from_candidates": lambda: select_abstract_from_candidates(context, chat),
-        "ocr_cleanup": lambda: clean_ocr_text(context, chat),
+        # OCR_CLEANUP was a warm-up call whose only consumer was the abstract
+        # extraction below; we now feed raw OCR text straight into
+        # extract_abstract_from_ocr, dropping one LLM call per doc.
+        "ocr_abstract": lambda: extract_abstract_from_ocr(build_ocr_input(context.lines)[:8000], chat),
     }
+
+    def _default(name: str) -> Any:
+        if name == "tei_metadata_pair":
+            return ({}, {})
+        return "" if name in {"abstract_from_candidates", "ocr_abstract"} else {}
+
     results: Dict[str, Any] = {}
     worker_count = max(1, int(per_document_llm_workers))
     if worker_count == 1:
@@ -698,7 +1029,7 @@ def _build_prediction_inner(
             try:
                 results[name] = task()
             except Exception:
-                results[name] = "" if name in {"abstract_from_candidates", "ocr_cleanup"} else {}
+                results[name] = _default(name)
     else:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             future_map = {executor.submit(with_otel_context(task)): name for name, task in tasks.items()}
@@ -707,13 +1038,13 @@ def _build_prediction_inner(
                 try:
                     results[name] = future.result()
                 except Exception:
-                    results[name] = "" if name in {"abstract_from_candidates", "ocr_cleanup"} else {}
+                    results[name] = _default(name)
 
     header_metadata = normalize_metadata(results.get("header_metadata") or {})
-    tei_metadata = normalize_metadata(results.get("tei_metadata") or {})
-    validated_tei_metadata = normalize_metadata(results.get("validated_tei_metadata") or {})
-    ocr_cleanup = str(results.get("ocr_cleanup") or "")
-    ocr_abstract = extract_abstract_from_ocr(ocr_cleanup, chat) if ocr_cleanup else ""
+    tei_metadata_pair: Tuple[Any, Any] = results.get("tei_metadata_pair") or ({}, {})
+    tei_metadata = normalize_metadata(tei_metadata_pair[0] or {})
+    validated_tei_metadata = normalize_metadata(tei_metadata_pair[1] or {})
+    ocr_abstract = str(results.get("ocr_abstract") or "")
 
     # Align with the original exp30 pipeline: start from TEI-extracted fields only,
     # and use LLM TEI outputs strictly as abstract candidates (not as field sources).
@@ -818,7 +1149,11 @@ def run_pipeline(settings: PipelineSettings) -> Dict[str, Any]:
     semaphore = threading.Semaphore(max(1, int(settings.llm_concurrency)))
 
     def chat(
-        messages: List[Dict[str, str]], temperature: float = 0.0, max_tokens: int = 800, step_name: str = ""
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = 800,
+        *,
+        step_name: str = "",
     ) -> str:
         with semaphore:
             return str(client.chat(messages, temperature=temperature, max_tokens=max_tokens, step_name=step_name))

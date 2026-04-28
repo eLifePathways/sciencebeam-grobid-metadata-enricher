@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -58,7 +58,7 @@ class AoaiPool:
             self._index += 1
         return backend
 
-    def chat(
+    def chat_with_usage(
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.0,
@@ -66,7 +66,7 @@ class AoaiPool:
         timeout_seconds: int = 60,
         max_attempts: int = 3,
         step_name: str = "",
-    ) -> str:
+    ) -> Tuple[str, Dict[str, int]]:
         with get_tracer().start_as_current_span(step_name or "llm") as span:
             span.set_attribute("openinference.span.kind", "LLM")
             span.set_attribute("input.value", json.dumps(messages, ensure_ascii=False))
@@ -96,33 +96,23 @@ class AoaiPool:
                     with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                         body = json.loads(response.read().decode("utf-8"))
                     content = _extract_chat_content(body)
-                    usage = body.get("usage") or {}
+                    usage = _extract_usage(body)
                     span.set_attribute("llm.model_name", backend.deployment)
                     span.set_attribute("output.value", content)
-                    if usage:
-                        span.set_attribute("llm.token_count.prompt", usage.get("prompt_tokens", 0))
-                        span.set_attribute("llm.token_count.completion", usage.get("completion_tokens", 0))
-                        span.set_attribute("llm.token_count.total", usage.get("total_tokens", 0))
-                    return content
+                    span.set_attribute("llm.token_count.prompt", usage["prompt_tokens"])
+                    span.set_attribute("llm.token_count.completion", usage["completion_tokens"])
+                    span.set_attribute("llm.token_count.total", usage["total_tokens"])
+                    return content, usage
                 except urllib.error.HTTPError as error:
                     last_error = error
                     if error.code in {429, 500, 502, 503, 504}:
                         time.sleep(2**attempt)
                         continue
                     raise
-                except Exception as error:
+                except Exception as error:  # pylint: disable=broad-except
                     last_error = error
                     time.sleep(2**attempt)
             raise RuntimeError(f"AOAI request failed after {max_attempts} attempts: {last_error}")
-
-
-class OpenAIClient:
-    def __init__(self, api_key: str, model: str, base_url: str = DEFAULT_OPENAI_BASE_URL) -> None:
-        if not api_key or not model:
-            raise ValueError("OpenAI client requires api_key and model.")
-        self.api_key = api_key
-        self.model = model
-        self.base_url = base_url.rstrip("/")
 
     def chat(
         self,
@@ -133,6 +123,34 @@ class OpenAIClient:
         max_attempts: int = 3,
         step_name: str = "",
     ) -> str:
+        content, _ = self.chat_with_usage(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            step_name=step_name,
+        )
+        return content
+
+
+class OpenAIClient:
+    def __init__(self, api_key: str, model: str, base_url: str = DEFAULT_OPENAI_BASE_URL) -> None:
+        if not api_key or not model:
+            raise ValueError("OpenAI client requires api_key and model.")
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+
+    def chat_with_usage(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = 800,
+        timeout_seconds: int = 60,
+        max_attempts: int = 3,
+        step_name: str = "",
+    ) -> Tuple[str, Dict[str, int]]:
         with get_tracer().start_as_current_span(step_name or "llm") as span:
             span.set_attribute("openinference.span.kind", "LLM")
             span.set_attribute("llm.model_name", self.model)
@@ -159,23 +177,41 @@ class OpenAIClient:
                     with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                         body = json.loads(response.read().decode("utf-8"))
                     content = _extract_chat_content(body)
-                    usage = body.get("usage") or {}
+                    usage = _extract_usage(body)
                     span.set_attribute("output.value", content)
-                    if usage:
-                        span.set_attribute("llm.token_count.prompt", usage.get("prompt_tokens", 0))
-                        span.set_attribute("llm.token_count.completion", usage.get("completion_tokens", 0))
-                        span.set_attribute("llm.token_count.total", usage.get("total_tokens", 0))
-                    return content
+                    span.set_attribute("llm.token_count.prompt", usage["prompt_tokens"])
+                    span.set_attribute("llm.token_count.completion", usage["completion_tokens"])
+                    span.set_attribute("llm.token_count.total", usage["total_tokens"])
+                    return content, usage
                 except urllib.error.HTTPError as error:
                     last_error = error
                     if error.code in {429, 500, 502, 503, 504}:
                         time.sleep(2**attempt)
                         continue
                     raise
-                except Exception as error:
+                except Exception as error:  # pylint: disable=broad-except
                     last_error = error
                     time.sleep(2**attempt)
             raise RuntimeError(f"OpenAI request failed after {max_attempts} attempts: {last_error}")
+
+    def chat(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = 800,
+        timeout_seconds: int = 60,
+        max_attempts: int = 3,
+        step_name: str = "",
+    ) -> str:
+        content, _ = self.chat_with_usage(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            step_name=step_name,
+        )
+        return content
 
 
 def _extract_chat_content(payload: Dict[str, Any]) -> str:
@@ -191,6 +227,22 @@ def _extract_chat_content(payload: Dict[str, Any]) -> str:
     return str(content)
 
 
+def _extract_usage(payload: Dict[str, Any]) -> Dict[str, int]:
+    usage = payload.get("usage") or {}
+    prompt = int(usage.get("prompt_tokens") or 0)
+    completion = int(usage.get("completion_tokens") or 0)
+    total = int(usage.get("total_tokens") or (prompt + completion))
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    completion_details = usage.get("completion_tokens_details") or {}
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+        "cached_tokens": int(prompt_details.get("cached_tokens") or 0),
+        "reasoning_tokens": int(completion_details.get("reasoning_tokens") or 0),
+    }
+
+
 def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -204,6 +256,8 @@ def run_grobid(
     tei_path: Path,
     grobid_url: str = DEFAULT_GROBID_URL,
     timeout: int = DEFAULT_GROBID_TIMEOUT,
+    consolidate_header: int = 0,
+    consolidate_citations: int = 0,
 ) -> None:
     ensure_parent(tei_path)
     if tei_path.exists() and tei_path.stat().st_size > 0:
@@ -216,7 +270,11 @@ def run_grobid(
                 response = httpx.post(
                     url,
                     files={"input": (pdf_path.name, pdf_file, "application/pdf")},
-                    data={"teiCoordinates": "1"},
+                    data={
+                        "teiCoordinates": "1",
+                        "consolidateHeader": str(int(consolidate_header)),
+                        "consolidateCitations": str(int(consolidate_citations)),
+                    },
                     timeout=httpx.Timeout(
                         connect=_GROBID_CONNECT_TIMEOUT,
                         read=float(timeout),

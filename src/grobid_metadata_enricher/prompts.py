@@ -41,3 +41,41 @@ KEYWORD_TRANSLATION_PROMPT = (
     'Return JSON only: {"translations": {"en": [...], "pt": [...], "es": [...]}}. '
     "Only include requested languages."
 )
+
+CONTENT_EXTRACTION_PROMPT = (
+    "Extract the structured content of this scientific article from the PDF layout text below. "
+    "Use ONLY the supplied text; do not invent anything. "
+    "Return JSON with these fields: "
+    "body_sections (list of section heading strings in reading order, e.g. 'Introduction', 'Methods', 'Results'); "
+    "figure_captions (list of figure caption strings, one per figure, including the 'Figure N.' label); "
+    "table_captions (list of table caption strings, one per table, including the 'Table N.' label); "
+    "reference_titles (list of article titles cited in the reference list, one per reference). "
+    "Omit any field that the text does not support. Keep each list ordered as items appear in the document. "
+    'Return JSON only: '
+    '{"body_sections": [...], "figure_captions": [...], "table_captions": [...], "reference_titles": [...]}.'
+)
+
+REFERENCES_EXTRACTION_PROMPT = (
+    "Extract every bibliographic reference listed in the text below. "
+    "The text is the reference list or end-of-document text of a scientific paper. "
+    "For each distinct numbered or unnumbered reference, return the article or chapter or book title as a string. "
+    "Do not include author names, journal, year, or page numbers. Return titles only. "
+    "Preserve the order the references appear. "
+    "Be exhaustive; there may be 30 or more references and all of them should be returned. "
+    "If you see a DOI next to a reference, also include it. "
+    "Do not invent; only return what the text contains. "
+    'Return JSON only: {"references": [{"title": "...", "doi": "..."}]}.'
+)
+
+TABLES_FIGURES_EXTRACTION_PROMPT = (
+    "Extract every table caption and figure caption from the scientific paper text below. "
+    "The text is the PDF layout and may contain headers, footers, body paragraphs, "
+    "figure captions, table captions, and table cells. "
+    "A table caption usually begins with 'Table N' or 'Tabla N' or 'Tabela N' where N is a number. "
+    "A figure caption usually begins with 'Figure N', 'Fig. N', or 'Figura N'. "
+    "Be exhaustive; a paper can contain 10 or more tables and 10 or more figures. "
+    "Return the full caption text (label plus description), in document order. "
+    "Do not include table cell content, only the caption that describes the table or figure. "
+    "Do not invent captions; only return what the text contains. "
+    'Return JSON only: {"tables": ["Table 1. ...", ...], "figures": ["Figure 1. ...", ...]}.'
+)
