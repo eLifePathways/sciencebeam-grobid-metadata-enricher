@@ -2,14 +2,30 @@ dataset:
   repo_id: elifepathways/sciencebeam-v2-benchmarking
   revision: main  # TODO: pin a tag (e.g. v1.0.0) once ready
   files:
-    biorxiv: {file: biorxiv-jats.parquet, id_column: ppr_id}
-    ore: ore.parquet
-    pkp: pkp.parquet
-    scielo_br: scielo_br.parquet
-    scielo_mx: scielo_mx.parquet
-    scielo_preprints: scielo_preprints.parquet
+    # biorxiv: {file: biorxiv-jats.parquet, id_column: ppr_id}
+    ore:
+      file: ore-jats/validation-00000-of-00001.parquet
+      id_column: ppr_id
+    pkp:
+      file: pkp-jats/validation-00000-of-00001.parquet
+      id_column: ppr_id
+    scielo_br:
+      file: scielo_br-jats/validation-00000-of-00001.parquet
+      id_column: ppr_id
+    scielo_mx:
+      file: scielo_mx-jats/validation-00000-of-00001.parquet
+      id_column: ppr_id
+    scielo_preprints-jats:
+      file: scielo_preprints-jats/validation-00000-of-00001.parquet
+      id_column: ppr_id
 
-corpora: [biorxiv, ore, pkp, scielo_br, scielo_mx, scielo_preprints]
+corpora:
+  # - biorxiv
+  - ore
+  - pkp
+  - scielo_br
+  - scielo_mx
+  - scielo_preprints-jats
 
 # Dataset row counts at revision main:
 #   biorxiv 158, ore 199, pkp 200, scielo_br 200, scielo_mx 112, scielo_preprints 1000
