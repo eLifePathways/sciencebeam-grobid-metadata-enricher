@@ -90,12 +90,14 @@ def make_chat(
         temperature: float = default_temperature,
         max_tokens: int = default_max_tokens,
         *,
-        stage: str,
+        step_name: str,
     ) -> str:
         with semaphore:
             t0 = time.perf_counter()
-            content, usage = client.chat_with_usage(messages, temperature=temperature, max_tokens=max_tokens)
-            recorder.add(stage, usage, (time.perf_counter() - t0) * 1000)
+            content, usage = client.chat_with_usage(
+                messages, temperature=temperature, max_tokens=max_tokens, step_name=step_name,
+            )
+            recorder.add(step_name, usage, (time.perf_counter() - t0) * 1000)
             return content
 
     return chat

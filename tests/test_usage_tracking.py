@@ -80,8 +80,10 @@ class _FakePool:
         messages: List[Dict[str, str]],
         temperature: float = 0.0,
         max_tokens: int = 800,
+        step_name: str = "",
     ) -> Tuple[str, Dict[str, int]]:
         # Key off the first system-prompt content word so tests can script per-stage returns.
+        del step_name  # captured by the closure caller; fake pool only inspects messages.
         tag = messages[0]["content"].split()[0]
         with self._lock:
             self.seen.append((len(messages), temperature, max_tokens))
@@ -193,14 +195,14 @@ class TestUsageRecorderAndSummarise:
 
         out = chat(
             [{"role": "system", "content": "HEADER_METADATA_SYSTEM body"}],
-            stage="HEADER_METADATA",
+            step_name="HEADER_METADATA",
         )
         assert out == "content-header"
         out = chat(
             [{"role": "system", "content": "CONTENT_HEAD_SYSTEM body"}],
             temperature=0.0,
             max_tokens=2000,
-            stage="CONTENT_HEAD",
+            step_name="CONTENT_HEAD",
         )
         assert out == "content-body"
 

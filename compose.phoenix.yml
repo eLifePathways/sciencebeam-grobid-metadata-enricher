@@ -1,0 +1,33 @@
+# Self-hosted Arize Phoenix for local OTEL tracing.
+# Usage: docker compose -f compose.yml -f compose.phoenix.yml up
+#
+# UI: http://localhost:6006
+
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"
+    environment:
+      - ERL_MAX_PORTS=128
+    volumes:
+      - phoenix-data:/root/.phoenix
+
+  api:
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:6006
+      - PHOENIX_PROJECT_NAME=sciencebeam
+    depends_on:
+      phoenix:
+        condition: service_started
+
+  benchmark:
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:6006
+      - PHOENIX_PROJECT_NAME=sciencebeam
+    depends_on:
+      phoenix:
+        condition: service_started
+
+volumes:
+  phoenix-data:
