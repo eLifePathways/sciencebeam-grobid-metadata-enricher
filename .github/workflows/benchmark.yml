@@ -89,6 +89,31 @@ jobs:
           done
           echo "Grobid never became healthy" >&2; exit 1
 
+      # Grobid + pdfalto are deterministic for a fixed (image tag, dataset revision,
+      # corpus, record_id). Cache their per-record outputs across runs so we only
+      # pay the cold-extraction cost when bench.yaml changes (which busts the key).
+      - name: Restore grobid/pdfalto cache
+        uses: actions/cache@v4
+        with:
+          path: benchmarks/cache
+          key: bench-grobid-${{ runner.os }}-0.9.0-crf-${{ hashFiles('benchmarks/bench.yaml') }}
+          restore-keys: |
+            bench-grobid-${{ runner.os }}-0.9.0-crf-
+
+      - name: Hydrate run dir from cache
+        run: |
+          set -eu
+          SRC=benchmarks/cache
+          DST=benchmarks/runs/${{ github.sha }}
+          mkdir -p "$DST"
+          if [ -d "$SRC" ]; then
+            rsync -a "$SRC"/ "$DST"/
+            cached=$(find "$DST" \( -name '*.tei.xml' -o -name '*.alto.xml' \) | wc -l)
+            echo "Cached TEI/ALTO files restored: $cached"
+          else
+            echo "No prior cache to restore."
+          fi
+
       - name: Run predict
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
@@ -99,6 +124,21 @@ jobs:
             --mode smoke \
             --out  benchmarks/runs/${{ github.sha }} \
             --pool-path runtime/aoai_pool.json
+
+      - name: Mirror TEI/ALTO back to cache
+        if: always()
+        run: |
+          set -eu
+          SRC=benchmarks/runs/${{ github.sha }}
+          DST=benchmarks/cache
+          mkdir -p "$DST"
+          rsync -a \
+            --include='*/' \
+            --include='*.tei.xml' \
+            --include='*.alto.xml' \
+            --exclude='*' \
+            "$SRC"/ "$DST"/
+          echo "Cache size: $(find "$DST" -type f | wc -l) files"
 
       - name: Fetch baseline run (main) if available
         id: baseline
