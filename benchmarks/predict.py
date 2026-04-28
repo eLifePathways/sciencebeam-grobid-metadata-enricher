@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import threading
 import time
@@ -384,4 +385,5 @@ def _git_sha() -> str:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     main()
