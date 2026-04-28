@@ -12,7 +12,6 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import yaml
 
 from benchmarks.gold import extract_gold
-from benchmarks.manifest import build_manifest
 from grobid_metadata_enricher.clients import (
     AoaiPool,
     DEFAULT_OPENAI_API_KEY,
@@ -253,6 +252,10 @@ def main():
     data_dir = args.out / "data"
     data_dir.mkdir(exist_ok=True)
 
+    # Lazy: build_manifest pulls in numpy/pyarrow/huggingface_hub (bench extras).
+    # Importing benchmarks.predict for the UsageRecorder/summarise_tokens helpers
+    # in unit tests must work with only the dev extra installed.
+    from benchmarks.manifest import build_manifest  # pylint: disable=import-outside-toplevel
     manifest = build_manifest(cfg, data_dir, args.mode)
     print(f"Manifest: {len(manifest)} records across {len(cfg['corpora'])} corpora", flush=True)
 
