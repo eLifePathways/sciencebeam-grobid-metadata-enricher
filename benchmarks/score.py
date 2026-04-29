@@ -159,7 +159,8 @@ def score(
                         c = r.get("llm_metrics", {}).get(metric)
                         b = baseline_index[key].get("llm_metrics", {}).get(metric)
                         if c is not None and b is not None:
-                            paired_cur.append(c); paired_base.append(b)
+                            paired_cur.append(c)
+                            paired_base.append(b)
                 if paired_cur:
                     arr_c = np.asarray(paired_cur, dtype=float)
                     arr_b = np.asarray(paired_base, dtype=float)
@@ -262,11 +263,11 @@ def render_markdown(result: Dict[str, Any], metrics: List[str], title: str = "Be
         lines.append("|" + "|".join(["---"] * len(header)) + "|")
         for m in metrics:
             e = section["metrics"][m]
-            g, l = e["grobid"], e["llm"]
+            g, llm = e["grobid"], e["llm"]
             row = [
                 m,
                 f"{g['mean']:.3f} [{g['ci_low']:.3f}, {g['ci_high']:.3f}]",
-                f"{l['mean']:.3f} [{l['ci_low']:.3f}, {l['ci_high']:.3f}]",
+                f"{llm['mean']:.3f} [{llm['ci_low']:.3f}, {llm['ci_high']:.3f}]",
                 f"{e['delta_llm_minus_grobid']:+.3f}" if e['delta_llm_minus_grobid'] is not None else "n/a",
                 f"{e['wilcoxon_p_llm_vs_grobid']:.3g}" if e['wilcoxon_p_llm_vs_grobid'] is not None else "n/a",
             ]
