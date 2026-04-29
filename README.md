@@ -82,7 +82,6 @@ Common dev commands:
 make lint           # ruff + mypy + pylint
 make format         # ruff --fix + ruff format
 make test           # pytest (unit + benchmark tests)
-make check          # lint + test in one shot
 make serve          # run the API locally (no Docker)
 make serve-reload   # run the API locally with auto-reload
 ```
