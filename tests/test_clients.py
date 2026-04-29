@@ -22,15 +22,15 @@ def _make_response(text: str = "<TEI/>") -> MagicMock:
     return response
 
 
-@pytest.fixture()
-def pdf_path(tmp_path: Path) -> Path:
+@pytest.fixture(name="pdf_path")
+def _pdf_path(tmp_path: Path) -> Path:
     path = tmp_path / "input.pdf"
     path.write_bytes(b"%PDF-1.4 fake")
     return path
 
 
-@pytest.fixture()
-def tei_path(tmp_path: Path) -> Path:
+@pytest.fixture(name="tei_path")
+def _tei_path(tmp_path: Path) -> Path:
     return tmp_path / "output.tei.xml"
 
 

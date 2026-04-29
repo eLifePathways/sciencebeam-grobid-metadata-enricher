@@ -10,13 +10,13 @@ from grobid_metadata_enricher.api import app
 PDF_BYTES = b"%PDF-1.4 fake pdf content"
 
 
-@pytest.fixture()
-def client() -> TestClient:
+@pytest.fixture(name="client")
+def _client() -> TestClient:
     return TestClient(app)
 
 
-@pytest.fixture()
-def mock_chat() -> MagicMock:
+@pytest.fixture(name="mock_chat")
+def _mock_chat() -> MagicMock:
     return MagicMock(return_value='{"title": "Test"}')
 
 
