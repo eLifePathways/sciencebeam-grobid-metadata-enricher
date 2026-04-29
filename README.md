@@ -96,10 +96,30 @@ make serve        # run the API locally (no Docker)
 ## CLI batch mode
 
 The CLI requires a running Grobid server and `pdfalto` on PATH (or via `--pdfalto`).
-In Docker, both are bundled automatically. For local use, start Grobid with:
+In Docker, both are bundled automatically. For local use, set them up manually:
+
+### Grobid (Docker — recommended for local CLI use)
 ```bash
 docker run -d --rm --name grobid -p 8070:8070 lfoppiano/grobid:0.9.0-crf
 ```
+
+### Grobid (local install)
+If you prefer a local install, follow the official Grobid instructions:
+1. Install Java (Grobid requires Java 8+).
+2. Clone the Grobid repo and build:
+   ```bash
+   git clone https://github.com/kermitt2/grobid.git
+   cd grobid
+   ./gradlew clean install
+   ```
+3. Start the service:
+   ```bash
+   ./gradlew run
+   ```
+   By default it serves at `http://localhost:8070/api`.
+
+### pdfalto
+Install [pdfalto](https://github.com/kermitt2/pdfalto) and ensure it is on PATH, or pass its location via `--pdfalto /path/to/pdfalto`.
 
 You can provide either:
 1) a manifest CSV with columns:
