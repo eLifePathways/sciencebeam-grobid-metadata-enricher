@@ -1,6 +1,9 @@
 services:
+  # Default GROBID backend (lfoppiano/grobid 0.9.0-crf, same image whose
+  # pdfalto binary the api/benchmark Dockerfile copies in). Always-on so
+  # `make start` keeps working without profile flags.
   grobid:
-    image: ghcr.io/elifepathways/sciencebeam-parser:0.1.18
+    image: lfoppiano/grobid:0.9.0-crf
     ports:
       - "8070:8070"
     volumes:
@@ -12,6 +15,34 @@ services:
       retries: 60
       start_period: 60s
 
+  # Alternative ScienceBeam Parser backend. Off by default (profile-gated)
+  # because the image only ships linux/amd64 and is large enough that
+  # auto-pulling on every `make start` would surprise contributors on
+  # Apple Silicon. Bring it up explicitly with:
+  #   docker compose --profile sciencebeam up -d --wait
+  # then point GROBID_URL at it (see PARSER and GROBID_URL env on the
+  # api / benchmark services below).
+  sciencebeam-parser:
+    image: ghcr.io/elifepathways/sciencebeam-parser:0.1.18
+    platform: linux/amd64
+    ports:
+      - "8071:8070"
+    volumes:
+      - sciencebeam-cache:/root/.cache
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8070/api/isalive"]
+      interval: 5s
+      # ScienceBeam Parser loads ML models on first request, so the
+      # readiness window has to be much larger than GROBID's. Without the
+      # longer start_period docker compose --wait reports the service as
+      # unhealthy even though it eventually answers, which looked like
+      # silent benchmark failure when it was really a startup race.
+      timeout: 30s
+      retries: 120
+      start_period: 600s
+    profiles:
+      - sciencebeam
+
   api:
     build:
       context: .
@@ -20,8 +51,15 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - GROBID_URL=http://grobid:8070/api
+      # GROBID_URL/PARSER are overridable from the host so a single
+      # `compose up` can target either backend without rebuilding. To run
+      # against ScienceBeam Parser:
+      #   docker compose --profile sciencebeam up -d --wait
+      #   GROBID_URL=http://sciencebeam-parser:8070/api PARSER=sciencebeam \
+      #     docker compose up -d api
+      - GROBID_URL=${GROBID_URL:-http://grobid:8070/api}
       - GROBID_TIMEOUT=${GROBID_TIMEOUT:-60}
+      - PARSER=${PARSER:-grobid}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
@@ -37,8 +75,9 @@ services:
       target: benchmark
     environment:
       - HF_TOKEN=${HF_TOKEN}
-      - GROBID_URL=http://grobid:8070/api
+      - GROBID_URL=${GROBID_URL:-http://grobid:8070/api}
       - GROBID_TIMEOUT=${GROBID_TIMEOUT:-60}
+      - PARSER=${PARSER:-grobid}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
@@ -48,11 +87,14 @@ services:
       - grobid-cache:/root/.cache
       - ./benchmarks/runs:/app/benchmarks/runs
       - ./runtime:/app/runtime
-    depends_on:
-      grobid:
-        condition: service_healthy
+    # No depends_on: the benchmark container connects to whichever URL is
+    # in GROBID_URL, so the Makefile targets are responsible for starting
+    # the chosen backend (grobid and/or sciencebeam-parser) first. Hard-
+    # depending on grobid here would deadlock benchmark-cross-parser when
+    # only sciencebeam-parser is running.
     profiles:
       - benchmark
 
 volumes:
   grobid-cache:
+  sciencebeam-cache:
