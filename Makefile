@@ -2,7 +2,8 @@
         with-langfuse-start with-langfuse-stop with-langfuse-logs with-langfuse-clean \
         with-phoenix-start with-phoenix-stop with-phoenix-logs with-phoenix-clean \
         benchmark-build benchmark benchmark-train-predict benchmark-train-score benchmark-train \
-        sciencebeam-start sciencebeam-stop sciencebeam-patch-figure-model benchmark-cross-parser
+        sciencebeam-start sciencebeam-stop sciencebeam-patch-figure-model benchmark-cross-parser \
+        show-regressions show-improvements
 
 -include .env
 export
@@ -14,6 +15,18 @@ PORT ?= 8000
 BENCHMARK_MODE ?= smoke
 BENCHMARK_RUN  ?= local
 PARSER         ?= grobid
+
+SHOW_RUN    ?= train/local-grobid
+SHOW_CORPUS ?=
+SHOW_METRIC ?=
+
+
+.require-%:
+	@if [ -z "$($(*))" ]; then \
+		echo "Error: $* is required. Usage: make $(@:.require-%=%) $*=<value>"; \
+		exit 1; \
+	fi
+
 
 install:
 	uv sync --extra dev --extra bench
@@ -232,3 +245,21 @@ benchmark-train-score-grobid:
 	@cat benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/report.md
 
 benchmark-train-grobid: benchmark-build benchmark-train-predict-grobid benchmark-train-score-grobid
+
+
+# Find and export regression/improvement cases for a given metric and corpus.
+# Example: make show-regressions SHOW_METRIC=abstract_edit_sim SHOW_CORPUS=ore
+# Override run dir: make show-regressions SHOW_RUN=train/local SHOW_METRIC=title_match SHOW_CORPUS=biorxiv
+show-regressions: .require-SHOW_METRIC .require-SHOW_CORPUS
+	$(VENV)/bin/python -m benchmarks.show_cases \
+		--run    benchmarks/runs/$(SHOW_RUN) \
+		--metric $(SHOW_METRIC) \
+		--corpus $(SHOW_CORPUS) \
+		--mode   regression
+
+show-improvements: .require-SHOW_METRIC .require-SHOW_CORPUS
+	$(VENV)/bin/python -m benchmarks.show_cases \
+		--run    benchmarks/runs/$(SHOW_RUN) \
+		--metric $(SHOW_METRIC) \
+		--corpus $(SHOW_CORPUS) \
+		--mode   improvement
