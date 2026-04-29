@@ -169,14 +169,18 @@ Key flags:
 Benchmarks run via Docker Compose (pdfalto is bundled in the image). Set `HF_TOKEN` in `.env`, then:
 
 ```bash
-make benchmark                                               # smoke run (25 docs, fast)
-make benchmark BENCHMARK_MODE=full                           # full run
+make benchmark                                               # smoke run (25 docs, fast) — uses validation split
+make benchmark BENCHMARK_MODE=full                           # full run on validation split
 make benchmark BENCHMARK_RUN=my-run                         # custom output dir under benchmarks/runs/
+make benchmark-train                                         # smoke run on train split (local development)
+make benchmark-train BENCHMARK_MODE=full                     # full run on train split
 ```
 
-Results are written to `benchmarks/runs/<BENCHMARK_RUN>/` and a Markdown report is printed to stdout.
+Results are written to `benchmarks/runs/<BENCHMARK_RUN>/` and a Markdown report is printed to stdout. Train-split results go under `benchmarks/runs/train/<BENCHMARK_RUN>/`.
 
-**Supported corpora**: biorxiv-jats, ore, pkp, scielo_br, scielo_mx (JATS — full content + reference metrics), and scielo_preprints (OAI-DC — header metrics only). JATS corpora additionally run the 3-pass content extraction and Crossref reference enrichment.
+`make benchmark` (and CI) use `bench.yaml` with the **validation split**. `make benchmark-train` uses `bench-train.yaml` with the **train split** — use the train target locally when tuning prompts so that CI validation scores remain unbiased.
+
+**Supported corpora**: ore, pkp, scielo_br, scielo_mx, scielo_preprints-jats (all JATS — full content + reference metrics). All corpora run the 3-pass content extraction and Crossref reference enrichment.
 
 The CI benchmark report includes per-stage LLM token usage (prompt / completion / total, plus per-doc averages) so cost is visible on every PR. Grobid/pdfalto outputs are cached across CI runs keyed on the bench.yaml + dataset revision, so repeated runs skip the extraction step entirely.
 
@@ -231,4 +235,4 @@ make benchmark
 ## Notes
 - Grobid can return 503 under load. Re-run with `--rerun` or lower `--workers` if that happens.
 - Results depend on LLM backend behavior; parallelism can change output order across backends.
-- Content extraction (body/figures/tables/references) only runs on JATS corpora in the benchmark. For the OAI-DC corpus (scielo_preprints), only header metrics are scored.
+- Content extraction (body/figures/tables/references) runs on all supported corpora — all are now JATS. Use `make benchmark-train` locally to avoid polluting the validation split used by CI.
