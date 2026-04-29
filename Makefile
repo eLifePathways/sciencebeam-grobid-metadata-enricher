@@ -27,7 +27,10 @@ lint:
 		src/ \
 		tests/ \
 		benchmarks/
-	$(VENV)/bin/pylint src/
+	$(VENV)/bin/pylint \
+		src/ \
+		tests/ \
+		benchmarks/
 
 format:
 	$(VENV)/bin/ruff check --fix \
