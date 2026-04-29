@@ -26,10 +26,10 @@ def build_manifest(cfg: Dict[str, Any], workdir: Path, mode: str) -> List[Dict[s
     seed = cfg["seeds"]["sample"]
     token = os.environ.get("HF_TOKEN")
 
-    LOGGER.info(f"Building manifest for mode {mode} with sample sizes: {sample_sizes} and seed: {seed}...")
-    LOGGER.info(f"Corpora to process: {cfg['corpora']}")
+    LOGGER.info("Building manifest for mode %s with sample sizes: %s and seed: %s...", mode, sample_sizes, seed)
+    LOGGER.info("Corpora to process: %s", cfg['corpora'])
     for corpus in cfg["corpora"]:
-        LOGGER.info(f"Processing corpus {corpus}...")
+        LOGGER.info("Processing corpus %s...", corpus)
         filename, id_column = _resolve_entry(cfg["dataset"]["files"][corpus])
         parquet_path = hf_hub_download(
             repo_id=cfg["dataset"]["repo_id"],

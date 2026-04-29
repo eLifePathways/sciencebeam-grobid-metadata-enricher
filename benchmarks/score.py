@@ -253,7 +253,7 @@ def render_markdown(result: Dict[str, Any], metrics: List[str], title: str = "Be
         has_baseline = any("vs_baseline" in section["metrics"][m] for m in metrics)
         # Attach a per-metric tokens column (summing by the metric's stage-group) when
         # token data is available for this section. Unknown metric mappings render "—".
-        has_tokens = bool(section_tokens and (section_tokens.get("by_metric_group") or {}))
+        has_tokens = bool(section_tokens and section_tokens.get("by_metric_group"))
         header = ["Metric", "Grobid (95% CI)", "LLM (95% CI)", "Δ LLM−Grobid", "Wilcoxon p"]
         if has_baseline:
             header += ["Δ vs baseline", "p vs baseline"]
