@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -7,6 +8,8 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import pyarrow.parquet as pq
 from huggingface_hub import hf_hub_download
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _resolve_entry(entry: Any) -> Tuple[str, str]:
@@ -23,7 +26,10 @@ def build_manifest(cfg: Dict[str, Any], workdir: Path, mode: str) -> List[Dict[s
     seed = cfg["seeds"]["sample"]
     token = os.environ.get("HF_TOKEN")
 
+    LOGGER.info(f"Building manifest for mode {mode} with sample sizes: {sample_sizes} and seed: {seed}...")
+    LOGGER.info(f"Corpora to process: {cfg['corpora']}")
     for corpus in cfg["corpora"]:
+        LOGGER.info(f"Processing corpus {corpus}...")
         filename, id_column = _resolve_entry(cfg["dataset"]["files"][corpus])
         parquet_path = hf_hub_download(
             repo_id=cfg["dataset"]["repo_id"],
