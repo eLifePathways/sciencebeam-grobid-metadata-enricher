@@ -1,7 +1,8 @@
-.PHONY: install lint format test serve serve-reload build start stop logs clean \
+.PHONY: install lint format test test-bench check serve serve-reload build start stop logs logs-api clean shell \
         with-langfuse-start with-langfuse-stop with-langfuse-logs with-langfuse-clean \
         with-phoenix-start with-phoenix-stop with-phoenix-logs with-phoenix-clean \
-        benchmark-build benchmark benchmark-train-predict benchmark-train-score benchmark-train
+        benchmark-build benchmark benchmark-score benchmark-compare \
+        benchmark-train-predict benchmark-train-score benchmark-train
 
 -include .env
 export
@@ -28,6 +29,11 @@ format:
 test:
 	$(VENV)/bin/pytest tests/
 
+test-bench:
+	$(VENV)/bin/pytest benchmarks/tests/
+
+check: lint test test-bench
+
 serve:
 	$(VENV)/bin/uvicorn grobid_metadata_enricher.api:app --host $(HOST) --port $(PORT)
 
@@ -46,6 +52,12 @@ stop:
 
 logs:
 	docker compose logs -f
+
+logs-api:
+	docker compose logs -f api
+
+shell:
+	docker compose exec api bash
 
 clean:
 	docker compose down -v
