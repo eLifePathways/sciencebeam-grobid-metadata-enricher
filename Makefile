@@ -16,7 +16,7 @@ BENCHMARK_RUN  ?= local
 PARSER         ?= grobid
 
 install:
-	uv sync --extra dev
+	uv sync --extra dev --extra bench
 
 lint:
 	$(VENV)/bin/ruff check src/ tests/
