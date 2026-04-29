@@ -2,6 +2,21 @@
 
 A pipeline that takes a scientific paper PDF (plus optional OAI-DC or JATS XML) and produces structured, LLM-enriched metadata — title, authors, affiliations, abstract, keywords, body sections, figures, tables, and references.
 
+## Contents
+- [What this pipeline does](#what-this-pipeline-does)
+- [Prerequisites](#prerequisites)
+- [Quick start (Docker Compose)](#quick-start-docker-compose)
+- [Install (local development)](#install-local-development)
+- [CLI batch mode](#cli-batch-mode)
+  - [ScienceBeam Parser backend](#sciencebeam-parser-backend)
+  - [Key flags](#key-flags)
+- [Outputs](#outputs)
+- [Benchmarking](#benchmarking)
+  - [Cross-parser comparison](#cross-parser-comparison)
+  - [Training-set benchmark (local only)](#training-set-benchmark-local-only)
+- [LLM observability](#llm-observability)
+- [Notes](#notes)
+
 ## What this pipeline does
 
 **Input**: a PDF + (optionally) an OAI-DC or JATS XML file per paper.
