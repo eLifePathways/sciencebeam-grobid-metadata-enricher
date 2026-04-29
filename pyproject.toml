@@ -15,15 +15,6 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.20",
 ]
 
-[project.scripts]
-grobid-metadata-enricher = "grobid_metadata_enricher.cli:main"
-
-[tool.setuptools.package-dir]
-"" = "src"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
 [project.optional-dependencies]
 dev = [
     "ruff>=0.4",
@@ -42,6 +33,15 @@ bench = [
     "rapidfuzz>=3",
     "pandas>=2.3.3",
 ]
+
+[project.scripts]
+grobid-metadata-enricher = "grobid_metadata_enricher.cli:main"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 line-length = 120
