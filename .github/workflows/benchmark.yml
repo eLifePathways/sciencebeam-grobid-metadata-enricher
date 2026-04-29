@@ -43,6 +43,12 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       AOAI_POOL_JSON: ${{ secrets.AOAI_POOL_JSON }}
       PARSER: ${{ matrix.parser }}
+      # Both matrix dims publish their parser on host port 8070 (the
+      # per-matrix `docker run` step swaps the image but keeps the port).
+      # Override resolve_parser_url's per-parser default (which is 8071
+      # for sciencebeam, matching compose.yml's port mapping) so the
+      # sciencebeam dim's predict step actually reaches the container.
+      GROBID_URL: http://localhost:8070/api
 
     steps:
       - uses: actions/checkout@v4
