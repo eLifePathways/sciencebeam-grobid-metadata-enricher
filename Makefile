@@ -16,19 +16,36 @@ BENCHMARK_RUN  ?= local
 PARSER         ?= grobid
 
 install:
-	uv sync --extra dev
+	uv sync --extra dev --extra bench
 
 lint:
-	$(VENV)/bin/ruff check src/ tests/
-	$(VENV)/bin/mypy src/
-	$(VENV)/bin/pylint src/
+	$(VENV)/bin/ruff check \
+		src/ \
+		tests/ \
+		benchmarks/
+	$(VENV)/bin/mypy \
+		src/ \
+		tests/ \
+		benchmarks/
+	$(VENV)/bin/pylint \
+		src/ \
+		tests/ \
+		benchmarks/
 
 format:
-	$(VENV)/bin/ruff check --fix src/ tests/
-	$(VENV)/bin/ruff format src/ tests/
+	$(VENV)/bin/ruff check --fix \
+		src/ \
+		tests/ \
+		benchmarks/
+	$(VENV)/bin/ruff format \
+		src/ \
+		tests/ \
+		benchmarks/
 
 test:
-	$(VENV)/bin/pytest tests/
+	$(VENV)/bin/pytest \
+		tests/ \
+		benchmarks/tests/
 
 serve:
 	$(VENV)/bin/uvicorn grobid_metadata_enricher.api:app --host $(HOST) --port $(PORT)
