@@ -1,69 +1,46 @@
 # grobid-metadata-enricher
 
-## What this pipeline does (high level)
-- Runs an upstream PDF parser (**Grobid** or **ScienceBeam Parser**) plus pdfalto, then uses an LLM to **re‑extract header metadata** (title/authors/affiliations) from layout lines.
-- Uses the LLM to **select the true abstract** from TEI + layout candidates, plus an OCR‑cleanup pass to improve noisy text.
-- **Translates and unions keywords** across languages using the LLM.
-- Adds **deterministic SciELO identifiers** (DOI + URL) from the record id.
-- Produces per‑document metrics and a root‑cause summary against OAI‑DC XML.
+A pipeline that takes a scientific paper PDF (plus optional OAI-DC or JATS XML) and produces structured, LLM-enriched metadata — title, authors, affiliations, abstract, keywords, body sections, figures, tables, and references.
 
-A small pipeline that runs an upstream parser + pdfalto + LLM enrichment and evaluates against OAI-DC XML.
+## Contents
+- [What this pipeline does](#what-this-pipeline-does)
+- [Prerequisites](#prerequisites)
+- [Quick start (Docker Compose)](#quick-start-docker-compose)
+- [Install (local development)](#install-local-development)
+- [CLI batch mode](#cli-batch-mode)
+  - [ScienceBeam Parser backend](#sciencebeam-parser-backend)
+  - [Key flags](#key-flags)
+- [Outputs](#outputs)
+- [Benchmarking](#benchmarking)
+  - [Cross-parser comparison](#cross-parser-comparison)
+  - [Training-set benchmark (local only)](#training-set-benchmark-local-only)
+- [LLM observability](#llm-observability)
+- [Notes](#notes)
 
-## Parser backends
+## What this pipeline does
 
-The pipeline supports two upstream parsers, both exposing `/processFulltextDocument` and returning TEI:
+**Input**: a PDF + (optionally) an OAI-DC or JATS XML file per paper.
 
-| Parser | Image | URL | Notes |
-| --- | --- | --- | --- |
-| `grobid` (default) | `lfoppiano/grobid:0.9.0-crf` | `http://localhost:8070/api` | linux/amd64 + arm64 |
-| `sciencebeam` | `ghcr.io/elifepathways/sciencebeam-parser:0.1.18` | `http://localhost:8071/api` (compose) | linux/amd64 only; slow startup, longer healthcheck `start_period` |
+**Steps, in order**:
 
-Select the backend with `--parser` (CLI), `PARSER=` (env), or `parser:` in `bench.yaml`. TEI and predictions are namespaced by parser (`tei/<parser>/...`, `predictions/<parser>/...`) so a follow-up run with the other backend does not silently re-use cached outputs.
+1. **Grobid + pdfalto** — parse the PDF into structured TEI XML (Grobid) and layout text lines (pdfalto/ALTO). Both run locally; no external service needed when using Docker.
+2. **Header re-extraction** (LLM) — extract title, authors, affiliations, language, and identifiers from the layout lines. This catches cases where Grobid's TEI header is wrong or incomplete.
+3. **Abstract selection** (LLM) — pick the best abstract from TEI candidates and raw layout text; run an OCR-cleanup pass on noisy text.
+4. **Keyword translation** (LLM) — collect keywords from all languages in the TEI and union them into a single deduplicated list.
+5. **Content extraction** (LLM, 3 parallel passes) — extract body sections, figure captions, and table captions from the full-document ALTO text. Three non-overlapping windows (head / middle / tail) run concurrently to reduce wall time.
+6. **Reference enrichment** (Crossref API, no LLM) — for every reference Grobid found with a title but no DOI, look up the DOI via Crossref (Jaccard-thresholded match, up to 80 lookups, 5 parallel).
+7. **SciELO identifiers** — derive DOI and SciELO URL deterministically from the record ID.
+8. **Evaluation** — compare predictions against the gold XML and emit per-field recall/match scores. Gated metrics (body section recall, figure/table caption recall, reference recall) only appear when the corresponding gold key exists.
+
+Exposed as a **FastAPI service** (primary usage) and as a **CLI batch processor**.
 
 ## Prerequisites
 - Python 3.10+ (3.11+ recommended)
-- An upstream parser server running and reachable: Grobid at `http://localhost:8070/api`, or ScienceBeam Parser at `http://localhost:8071/api`
-- `pdfalto` installed and on PATH (or pass `--pdfalto /path/to/pdfalto`)
 - One of:
   - AOAI pool JSON (round-robin backends), or
   - OpenAI API key + model name
 
-### Grobid (Docker)
-```bash
-docker run -d --rm --name grobid -p 8070:8070 grobid/grobid:0.7.2
-```
-
-### ScienceBeam Parser (Docker)
-```bash
-docker run -d --rm --name sciencebeam-parser \
-  --platform linux/amd64 \
-  -p 8071:8070 \
-  ghcr.io/elifepathways/sciencebeam-parser:0.1.18
-```
-First-request model loading can take several minutes; the compose healthcheck reflects this. Then point the pipeline at it: `--parser sciencebeam --grobid-url http://localhost:8071/api`.
-
-### Grobid (local install)
-If you prefer a local install, follow the official Grobid instructions:
-1) Install Java (Grobid requires Java 8+).
-2) Clone the Grobid repo and build:
-   ```
-   git clone https://github.com/kermitt2/grobid.git
-   cd grobid
-   ./gradlew clean install
-   ```
-3) Start the service:
-   ```
-   ./gradlew run
-   ```
-By default it serves at `http://localhost:8070/api`.
-
-### pdfalto
-Install pdfalto and ensure it is on PATH. Example path used in this repo:
-```
-/Users/leon/bin/pdfalto
-```
-
-You can choose which LLM cloud endpoint to use. We plan to support local vLLM deployments later, but for the benchmark here, use OpenAI.
+> **Note**: when using Docker Compose (`make start`), Grobid and pdfalto are bundled in the image — no separate setup needed. LLM credentials are required regardless of how you run the pipeline.
 
 ### AOAI pool JSON
 This is a pool of endpoint configs; the runner round‑robins across them.
@@ -82,36 +59,64 @@ Example file format:
 ```
 
 ### OpenAI API key + model
-Set environment variables or pass CLI flags:
-```
+```bash
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o-mini
 ```
 
-Or:
-```
---openai-api-key ... --openai-model gpt-4o-mini
-```
+## Quick start (Docker Compose)
 
-## Install
-From this folder:
+Copy `.env` and set your LLM credentials:
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+# .env
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-4o-mini
 ```
 
-If you plan to use parquet input, install pyarrow in the same environment:
+Build and start the API (Grobid + pdfalto are bundled in the image):
 ```bash
-pip install pyarrow
+make start        # build + start; API at http://localhost:8000
+make stop         # stop containers (keeps volumes)
+make logs         # tail logs (all services)
+make logs-api     # tail logs (API only — less grobid noise)
+make clean        # stop and delete volumes
 ```
 
-If you do not want to install, you can run with:
+The API docs are at http://localhost:8000/api/docs.
+
+## Install (local development)
+
 ```bash
-env PYTHONPATH=./src python3 -m grobid_metadata_enricher ...
+make install
+# or manually:
+uv sync --extra dev --extra bench
 ```
 
-## Run
+Common dev commands:
+```bash
+make lint           # ruff + mypy + pylint
+make format         # ruff --fix + ruff format
+make test           # pytest (unit + benchmark tests)
+make serve          # run the API locally (no Docker)
+make serve-reload   # run the API locally with auto-reload
+```
+
+## CLI batch mode
+
+The CLI requires a running Grobid server and `pdfalto` on PATH (or via `--pdfalto`).
+In Docker, both are bundled automatically. For local use, set them up manually:
+
+### Grobid (Docker — recommended for local CLI use)
+```bash
+docker run -d --rm --name grobid -p 8070:8070 lfoppiano/grobid:0.9.0-crf
+```
+
+### Grobid (local install)
+Follow the [official Grobid instructions](https://grobid.readthedocs.io/en/latest/Install-Grobid/). By default it serves at `http://localhost:8070/api`.
+
+### pdfalto
+Install [pdfalto](https://github.com/kermitt2/pdfalto) and ensure it is on PATH, or pass its location via `--pdfalto /path/to/pdfalto`.
+
 You can provide either:
 1) a manifest CSV with columns:
 ```
@@ -129,11 +134,10 @@ oai_ops.preprints.scielo.org_preprint_123,/path/to/123.pdf,/path/to/123.xml
 
 Run (AOAI pool, CSV manifest):
 ```bash
-python3 -m grobid_metadata_enricher \
+grobid-metadata-enricher \
   --manifest /path/to/manifest.csv \
   --pool /path/to/aoai_pool.json \
   --output-dir /path/to/output \
-  --pdfalto /path/to/pdfalto \
   --workers 20 \
   --per-document-llm-workers 5 \
   --llm-concurrency 20
@@ -141,12 +145,11 @@ python3 -m grobid_metadata_enricher \
 
 Run (OpenAI API key + model, CSV manifest):
 ```bash
-python3 -m grobid_metadata_enricher \
+grobid-metadata-enricher \
   --manifest /path/to/manifest.csv \
   --openai-api-key $OPENAI_API_KEY \
   --openai-model gpt-4o-mini \
   --output-dir /path/to/output \
-  --pdfalto /path/to/pdfalto \
   --workers 20 \
   --per-document-llm-workers 5 \
   --llm-concurrency 20
@@ -154,7 +157,7 @@ python3 -m grobid_metadata_enricher \
 
 Run (parquet input):
 ```bash
-python3 -m grobid_metadata_enricher \
+grobid-metadata-enricher \
   --manifest /path/to/scielo_preprints.parquet \
   --pool /path/to/aoai_pool.json \
   --output-dir /path/to/output \
@@ -166,32 +169,31 @@ Note: parquet input requires `pyarrow`:
 pip install pyarrow
 ```
 
-Run (ScienceBeam Parser instead of Grobid):
+### ScienceBeam Parser backend
+
+To use ScienceBeam Parser instead of GROBID, start its sidecar first:
+
 ```bash
-make sciencebeam-start          # starts the sidecar and patches its bundled figure model
-python3 -m grobid_metadata_enricher \
+make sciencebeam-start   # start the ScienceBeam Parser container (port 8071)
+make sciencebeam-stop    # stop it
+```
+
+`sciencebeam-start` also applies a one-time patch that fixes a missing `config.json` in the upstream image (`0.1.18`) which causes HTTP 500 errors on every request. The patch is idempotent — re-running is safe.
+
+Then pass `--parser sciencebeam` (or set `PARSER=sciencebeam` for benchmarks):
+
+```bash
+grobid-metadata-enricher \
+  --parser sciencebeam \
   --manifest /path/to/manifest.csv \
-  --pool /path/to/aoai_pool.json \
-  --output-dir /path/to/output \
-  --pdfalto /path/to/pdfalto \
-  --parser sciencebeam
-```
-Same flags as the Grobid runs above plus `--parser sciencebeam`. `--grobid-url` is optional and resolves from the parser: `localhost:8070/api` for grobid, `localhost:8071/api` for sciencebeam. Pass it explicitly only when pointing at a non-default host. `--parser` also accepts the `PARSER` env var. TEI and predictions are namespaced per parser at `<output-dir>/tei/<parser>/...` and `<output-dir>/predictions/<parser>/...`, so a follow-up run with the other backend does not re-use cached outputs. `make sciencebeam-stop` shuts the sidecar down.
-
-Probe a parser directly with a single PDF (no LLM, returns TEI on stdout):
-```bash
-# Grobid
-docker compose up -d --wait grobid
-curl -F "input=@paper.pdf" http://localhost:8070/api/processFulltextDocument
-
-# ScienceBeam Parser
-make sciencebeam-start
-curl -F "input=@paper.pdf" http://localhost:8071/api/processFulltextDocument
+  --openai-api-key $OPENAI_API_KEY \
+  --openai-model gpt-4o-mini \
+  --output-dir /path/to/output
 ```
 
-Key flags:
+### Key flags
 - `--parser`: upstream PDF parser, `grobid` (default) or `sciencebeam`
-- `--grobid-url`: parser endpoint URL (defaults to `localhost:8070/api` for grobid, `localhost:8071/api` for sciencebeam; honour `GROBID_URL` env)
+- `--grobid-url`: parser endpoint URL (defaults to `localhost:8070/api` for grobid, `localhost:8071/api` for sciencebeam; honours `GROBID_URL` env)
 - `--workers`: number of docs processed in parallel
 - `--per-document-llm-workers`: LLM calls per doc in parallel (after Grobid/pdfalto)
 - `--llm-concurrency`: global LLM in-flight cap
@@ -200,75 +202,94 @@ Key flags:
 
 ## Outputs
 `--output-dir` will contain:
-- `tei/`: Grobid TEI
-- `alto/`: pdfalto ALTO
-- `predictions/`: JSON per record
-- `per_document.jsonl`: per-record predictions + metrics
+- `tei/`: Grobid TEI XML
+- `alto/`: pdfalto ALTO layout files
+- `predictions/`: JSON per record — includes header fields (title, authors, affiliations, abstract, keywords, language, identifiers) **and** content fields (body_sections, figure_captions, table_captions, reference_dois, reference_titles)
+- `per_document.jsonl`: per-record predictions + metrics + LLM token usage breakdown by stage
 - `metrics.json`: aggregated metrics
 - `root_causes.md`: failure analysis summary
 - `errors.json`: errors per record (if any)
 
 ## Benchmarking
-Use a fixed manifest for reproducibility. Example (SciELO 200 sample):
-```bash
-python3 -m grobid_metadata_enricher \
-  --manifest /path/to/manifest_200.csv \
-  --pool /path/to/aoai_pool.json \
-  --output-dir /path/to/run_200 \
-  --pdfalto /path/to/pdfalto \
-  --workers 20 --per-document-llm-workers 5 --llm-concurrency 20
-```
 
-The aggregated metrics are written to `metrics.json`.
-
-### Cross-parser benchmark
-
-Run the same smoke benchmark through both parser backends and compare:
-```bash
-make benchmark-cross-parser BENCHMARK_RUN=cross
-```
-This spins up both `grobid` and `sciencebeam-parser` services, runs predict + score for each, and writes:
-- `benchmarks/runs/cross-grobid/report.md`
-- `benchmarks/runs/cross-sciencebeam/report.md`
-
-Or run a single backend:
-```bash
-make benchmark PARSER=sciencebeam BENCHMARK_RUN=sb-smoke
-```
-
-## LLM observability with Langfuse
-
-The stack can optionally run [Langfuse](https://langfuse.com) locally to trace all LLM calls via OpenTelemetry.
-
-### Start the full stack (API + Langfuse)
+Benchmarks run via Docker Compose (pdfalto is bundled in the image). Set `HF_TOKEN` in `.env`, then:
 
 ```bash
-make with-langfuse-start
+make benchmark                           # smoke run (25 docs/corpus, fast — default)
+make benchmark BENCHMARK_MODE=full       # full run (all docs)
+make benchmark BENCHMARK_RUN=my-run     # custom output directory name
+make benchmark PARSER=sciencebeam       # use ScienceBeam Parser instead of GROBID
 ```
 
-This brings up the API alongside Langfuse and its dependencies (ClickHouse, PostgreSQL, Redis, MinIO). Once ready:
-- API: http://localhost:8000
-- Langfuse UI: http://localhost:3000 — log in with `admin@local.dev` / `password`
+Outputs land in `benchmarks/runs/<BENCHMARK_RUN>/` (default: `benchmarks/runs/local/`). The aggregated report is written to `report.md` in that directory and printed at the end of the run.
 
-The API and benchmark services automatically send OTEL traces to Langfuse when started this way.
+### Cross-parser comparison
 
-### Other targets
+Run the smoke benchmark against both GROBID and ScienceBeam Parser back-to-back and diff their `report.md` outputs:
 
 ```bash
-make with-langfuse-stop    # stop all containers (keeps volumes)
-make with-langfuse-logs    # tail logs for the full stack
-make with-langfuse-clean   # stop and delete all volumes
+make benchmark-cross-parser                        # default: smoke mode
+make benchmark-cross-parser BENCHMARK_MODE=full    # full run
 ```
+
+Outputs land in `benchmarks/runs/<BENCHMARK_RUN>-grobid/` and `benchmarks/runs/<BENCHMARK_RUN>-sciencebeam/`.
+
+### Training-set benchmark (local only)
+
+To benchmark on the training split without polluting the validation split used by CI:
+
+```bash
+make benchmark-train                     # build + predict + score
+make benchmark-train BENCHMARK_MODE=full
+```
+
+## LLM observability
+
+All LLM calls are instrumented with OpenTelemetry. By default tracing is off; add one of the backends below to enable it. Choose based on your needs:
+
+| | Arize Phoenix | Langfuse |
+|---|---|---|
+| **Best for** | Quick local trace inspection | Cost tracking, prompt management, long-term analysis |
+| **Stack** | Single container | PostgreSQL + ClickHouse + Redis + MinIO + worker |
+| **Start-up** | Seconds | ~1 min (many services) |
+| **UI** | http://localhost:6006 | http://localhost:3000 |
+
+### Arize Phoenix — lightweight, trace-first
+
+Pick this if you want to inspect prompt/response pairs and latency with minimal setup overhead.
+
+```bash
+make with-phoenix-start    # API + Phoenix (single extra container)
+make with-phoenix-stop
+make with-phoenix-logs
+make with-phoenix-clean    # removes volumes
+```
+
+UI at http://localhost:6006 under the **sciencebeam** project.
+
+### Langfuse — full LLM platform
+
+Pick this if you need cost tracking, prompt versioning, user feedback, or evaluations alongside traces.
+
+```bash
+make with-langfuse-start   # API + full Langfuse stack
+make with-langfuse-stop
+make with-langfuse-logs
+make with-langfuse-clean   # removes volumes
+```
+
+UI at http://localhost:3000 — log in with `admin@local.dev` / `password`. Traces appear under the pre-provisioned **sciencebeam** project.
 
 ### Run benchmarks with tracing
 
+Start either backend first, then run the benchmark:
+
 ```bash
-make with-langfuse-start
+make with-phoenix-start    # or with-langfuse-start
 make benchmark
 ```
-
-Traces appear in the Langfuse UI under the pre-provisioned **sciencebeam** project.
 
 ## Notes
 - Grobid can return 503 under load. Re-run with `--rerun` or lower `--workers` if that happens.
 - Results depend on LLM backend behavior; parallelism can change output order across backends.
+- Content extraction (body/figures/tables/references) runs on all supported corpora — all are now JATS. Use `make benchmark-train` locally (see [Training-set benchmark](#training-set-benchmark-local-only)) to avoid polluting the validation split used by CI.

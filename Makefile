@@ -1,4 +1,4 @@
-.PHONY: install lint format test serve serve-reload build start stop logs clean \
+.PHONY: install lint format test serve serve-reload build start stop logs logs-api clean \
         with-langfuse-start with-langfuse-stop with-langfuse-logs with-langfuse-clean \
         with-phoenix-start with-phoenix-stop with-phoenix-logs with-phoenix-clean \
         benchmark-build benchmark benchmark-train-predict benchmark-train-score benchmark-train \
@@ -65,6 +65,9 @@ stop:
 
 logs:
 	docker compose logs -f
+
+logs-api:
+	docker compose logs -f api
 
 clean:
 	docker compose down -v
