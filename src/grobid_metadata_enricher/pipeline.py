@@ -15,6 +15,7 @@ from .clients import (
     DEFAULT_OPENAI_API_KEY,
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
+    DEFAULT_PARSER,
     DEFAULT_PDFALTO_BIN,
     DEFAULT_POOL_PATH,
     AoaiPool,
@@ -152,6 +153,7 @@ class PipelineSettings:
     openai_base_url: str = DEFAULT_OPENAI_BASE_URL
     output_dir: Path = Path("output")
     grobid_url: str = DEFAULT_GROBID_URL
+    parser: str = DEFAULT_PARSER
     pdfalto_bin: Path = DEFAULT_PDFALTO_BIN
     pdfalto_start_page: int = 1
     pdfalto_end_page: int = 99
@@ -194,14 +196,22 @@ def safe_extract_json(text: str) -> MetadataRecord:
         return {}
 
 
-def build_document_paths(row: ManifestRow, output_dir: Path) -> DocumentPaths:
+def build_document_paths(
+    row: ManifestRow,
+    output_dir: Path,
+    parser: str = DEFAULT_PARSER,
+) -> DocumentPaths:
+    # TEI and predictions are namespaced by parser so a second run against
+    # the other backend does not silently re-use the first run's cached
+    # outputs. ALTO is parser-independent (pdfalto on the raw PDF) so it
+    # stays at the top level and is reused across parsers.
     return DocumentPaths(
         record_id=row["record_id"],
         pdf_path=Path(row["pdf_path"]),
         xml_path=Path(row["xml_path"]),
-        tei_path=output_dir / "tei" / f"{row['record_id']}.tei.xml",
+        tei_path=output_dir / "tei" / parser / f"{row['record_id']}.tei.xml",
         alto_path=output_dir / "alto" / f"{row['record_id']}.alto.xml",
-        prediction_path=output_dir / "predictions" / f"{row['record_id']}.json",
+        prediction_path=output_dir / "predictions" / parser / f"{row['record_id']}.json",
     )
 
 
@@ -1095,8 +1105,13 @@ def process_record(
     settings: PipelineSettings,
     chat: Callable[..., str],
 ) -> Dict[str, Any]:
-    paths = build_document_paths(row, settings.output_dir)
-    run_grobid(paths.pdf_path, paths.tei_path, grobid_url=settings.grobid_url)
+    paths = build_document_paths(row, settings.output_dir, parser=settings.parser)
+    run_grobid(
+        paths.pdf_path,
+        paths.tei_path,
+        grobid_url=settings.grobid_url,
+        parser=settings.parser,
+    )
     run_pdfalto(
         paths.pdf_path,
         paths.alto_path,
@@ -1124,9 +1139,9 @@ def process_record(
 
 def run_pipeline(settings: PipelineSettings) -> Dict[str, Any]:
     init_telemetry()
-    ensure_dir(settings.output_dir / "tei")
+    ensure_dir(settings.output_dir / "tei" / settings.parser)
     ensure_dir(settings.output_dir / "alto")
-    ensure_dir(settings.output_dir / "predictions")
+    ensure_dir(settings.output_dir / "predictions" / settings.parser)
 
     manifest_path = settings.manifest_path
     if manifest_path.suffix.lower() in {".parquet", ".pq"}:

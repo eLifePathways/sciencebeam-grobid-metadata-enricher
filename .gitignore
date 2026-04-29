@@ -10,3 +10,4 @@ __pycache__/
 # Benchmark run artefacts
 benchmarks/runs/
 benchmarks/.hf_cache/
+benchmarks/data

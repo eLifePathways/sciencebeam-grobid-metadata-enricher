@@ -18,7 +18,12 @@ from grobid_metadata_enricher.clients import (
     DEFAULT_OPENAI_API_KEY,
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
+    DEFAULT_PARSER,
+    DEFAULT_PARSER_URLS,
+    PARSER_GROBID,
+    SUPPORTED_PARSERS,
     OpenAIClient,
+    resolve_parser_url,
     run_grobid,
     run_pdfalto,
 )
@@ -158,15 +163,19 @@ def process_one(
     recorder = UsageRecorder()
     chat = make_chat_fn(recorder)
 
+    parser = cfg["grobid"].get("parser", DEFAULT_PARSER)
     corpus_out = out_dir / corpus
-    tei_path = corpus_out / "tei" / f"{record_id}.tei.xml"
+    # TEI and per-doc predictions are namespaced by parser so a follow-up
+    # run with the other backend does not silently re-use the first run's
+    # cached outputs. ALTO is parser-independent (pdfalto on the raw PDF).
+    tei_path = corpus_out / "tei" / parser / f"{record_id}.tei.xml"
     alto_path = corpus_out / "alto" / f"{record_id}.alto.xml"
-    pred_path = corpus_out / "predictions" / f"{record_id}.json"
+    pred_path = corpus_out / "predictions" / parser / f"{record_id}.json"
     for p in (tei_path, alto_path, pred_path):
         p.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        run_grobid(pdf_path, tei_path, grobid_url=cfg["grobid"]["url"])
+        run_grobid(pdf_path, tei_path, grobid_url=cfg["grobid"]["url"], parser=parser)
     except Exception as exc:
         return {"record_id": record_id, "corpus": corpus, "error": f"grobid: {exc}"}
 
@@ -244,11 +253,39 @@ def main():
     ap.add_argument("--mode", choices=["smoke", "full"], required=True)
     ap.add_argument("--out", required=True, type=Path, help="Output run directory")
     ap.add_argument("--pool-path", type=Path, default=Path(os.environ.get("AOAI_POOL_PATH", "aoai_pool.json")))
+    ap.add_argument(
+        "--parser",
+        type=str,
+        choices=list(SUPPORTED_PARSERS),
+        default=None,
+        help="Override upstream parser backend (also accepts the PARSER env var).",
+    )
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
-    if os.environ.get("GROBID_URL"):
-        cfg["grobid"]["url"] = os.environ["GROBID_URL"]
+    # PARSER env var or --parser flag overrides the parser backend so the
+    # same bench.yaml can drive both grobid and sciencebeam runs without
+    # editing the file. Validated against SUPPORTED_PARSERS so a typo
+    # (e.g. "scienceBeam") fails loudly here instead of silently selecting
+    # the default.
+    parser_choice = args.parser or os.environ.get("PARSER") or cfg["grobid"].get("parser") or DEFAULT_PARSER
+    if parser_choice not in SUPPORTED_PARSERS:
+        raise SystemExit(
+            f"Unsupported --parser/PARSER {parser_choice!r}; "
+            f"expected one of {SUPPORTED_PARSERS}"
+        )
+    cfg["grobid"]["parser"] = parser_choice
+    # Resolve the parser URL after parser_choice is decided so the
+    # bench.yaml default (typically grobid's localhost:8070) is upgraded
+    # to the sciencebeam port automatically when the user passes
+    # PARSER=sciencebeam without also setting GROBID_URL. The historical
+    # grobid default in bench.yaml is treated as "not set" so it doesn't
+    # accidentally pin cross-parser runs to grobid's port. Explicit
+    # GROBID_URL still wins.
+    yaml_url = cfg["grobid"].get("url")
+    yaml_override = yaml_url if yaml_url and yaml_url != DEFAULT_PARSER_URLS[PARSER_GROBID] else None
+    cfg["grobid"]["url"] = resolve_parser_url(parser_choice, yaml_override)
+    print(f"Parser backend: {parser_choice} ({cfg['grobid']['url']})", flush=True)
     args.out.mkdir(parents=True, exist_ok=True)
     data_dir = args.out / "data"
     data_dir.mkdir(exist_ok=True)
@@ -359,6 +396,7 @@ def main():
         "mode": args.mode,
         "config_path": str(args.config),
         "dataset": cfg["dataset"],
+        "parser": parser_choice,
         "n_records": n_records,
         "n_errors": len(errors),
         "elapsed_s": round(elapsed, 1),

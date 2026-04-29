@@ -14,6 +14,7 @@ from .clients import (
     DEFAULT_OPENAI_API_KEY,
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
+    DEFAULT_PARSER,
     DEFAULT_PDFALTO_BIN,
     DEFAULT_POOL_PATH,
     AoaiPool,
@@ -41,6 +42,7 @@ app = FastAPI(
 router = APIRouter(prefix="/api")
 _grobid_url: str = DEFAULT_GROBID_URL
 _grobid_timeout: int = DEFAULT_GROBID_TIMEOUT
+_parser: str = DEFAULT_PARSER
 
 
 def _make_chat() -> Optional[Callable[..., str]]:
@@ -96,7 +98,13 @@ def grobid(
         pdf_path.write_bytes(file.file.read())
 
         try:
-            run_grobid(pdf_path, tei_path, grobid_url=_grobid_url, timeout=_grobid_timeout)
+            run_grobid(
+                pdf_path,
+                tei_path,
+                grobid_url=_grobid_url,
+                timeout=_grobid_timeout,
+                parser=_parser,
+            )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"GROBID processing failed: {exc}") from exc
 
@@ -127,7 +135,13 @@ def transform(
         pdf_path.write_bytes(file.file.read())
 
         try:
-            run_grobid(pdf_path, tei_path, grobid_url=_grobid_url, timeout=_grobid_timeout)
+            run_grobid(
+                pdf_path,
+                tei_path,
+                grobid_url=_grobid_url,
+                timeout=_grobid_timeout,
+                parser=_parser,
+            )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"GROBID processing failed: {exc}") from exc
 
