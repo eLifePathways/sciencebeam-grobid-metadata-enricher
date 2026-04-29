@@ -1,4 +1,4 @@
-.PHONY: install lint format test serve serve-reload build start stop logs clean \
+.PHONY: install lint format test serve serve-reload build start stop logs logs-api clean \
         with-langfuse-start with-langfuse-stop with-langfuse-logs with-langfuse-clean \
         with-phoenix-start with-phoenix-stop with-phoenix-logs with-phoenix-clean \
         benchmark-build benchmark benchmark-train-predict benchmark-train-score benchmark-train \
@@ -66,6 +66,9 @@ stop:
 logs:
 	docker compose logs -f
 
+logs-api:
+	docker compose logs -f api
+
 clean:
 	docker compose down -v
 
@@ -100,6 +103,10 @@ with-phoenix-logs:
 
 with-phoenix-clean:
 	$(COMPOSE_PHOENIX) down -v
+
+
+grobid-start:
+	docker compose up -d --wait grobid
 
 
 benchmark-build:
@@ -172,8 +179,7 @@ sciencebeam-patch-figure-model:
 # sciencebeam) into sibling run dirs so report.md outputs can be diffed
 # directly. Outputs land in benchmarks/runs/$(BENCHMARK_RUN)-grobid and
 # benchmarks/runs/$(BENCHMARK_RUN)-sciencebeam.
-benchmark-cross-parser: benchmark-build sciencebeam-patch-figure-model
-	docker compose up -d --wait grobid
+benchmark-cross-parser: grobid-start benchmark-build sciencebeam-patch-figure-model
 	docker compose --profile benchmark run --rm \
 		-e PARSER=grobid \
 		-e GROBID_URL=http://grobid:8070/api \
@@ -210,19 +216,19 @@ benchmark-cross-parser: benchmark-build sciencebeam-patch-figure-model
 	@cat benchmarks/runs/$(BENCHMARK_RUN)-sciencebeam/report.md
 
 
-benchmark-train-predict:
+benchmark-train-predict-grobid: grobid-start
 	docker compose --profile benchmark run --rm benchmark \
 		python -m benchmarks.predict \
 			--config benchmarks/bench-train.yaml \
 			--mode   $(BENCHMARK_MODE) \
-			--out    benchmarks/runs/train/$(BENCHMARK_RUN)
+			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-grobid
 
-benchmark-train-score:
+benchmark-train-score-grobid:
 	docker compose --profile benchmark run --rm --no-deps benchmark \
 		python -m benchmarks.score \
-			--run    benchmarks/runs/train/$(BENCHMARK_RUN) \
+			--run    benchmarks/runs/train/$(BENCHMARK_RUN)-grobid \
 			--config benchmarks/bench-train.yaml \
-			--out    benchmarks/runs/train/$(BENCHMARK_RUN)/report.md
-	@cat benchmarks/runs/train/$(BENCHMARK_RUN)/report.md
+			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/report.md
+	@cat benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/report.md
 
-benchmark-train: benchmark-build benchmark-train-predict benchmark-train-score
+benchmark-train-grobid: benchmark-build benchmark-train-predict-grobid benchmark-train-score-grobid
