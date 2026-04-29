@@ -176,8 +176,7 @@ sciencebeam-patch-figure-model:
 # sciencebeam) into sibling run dirs so report.md outputs can be diffed
 # directly. Outputs land in benchmarks/runs/$(BENCHMARK_RUN)-grobid and
 # benchmarks/runs/$(BENCHMARK_RUN)-sciencebeam.
-benchmark-cross-parser: benchmark-build sciencebeam-patch-figure-model
-	docker compose up -d --wait grobid
+benchmark-cross-parser: grobid-start benchmark-build sciencebeam-patch-figure-model
 	docker compose --profile benchmark run --rm \
 		-e PARSER=grobid \
 		-e GROBID_URL=http://grobid:8070/api \
