@@ -28,7 +28,9 @@ format:
 	$(VENV)/bin/ruff format src/ tests/
 
 test:
-	$(VENV)/bin/pytest tests/
+	$(VENV)/bin/pytest \
+		tests/ \
+		benchmarks/tests/
 
 serve:
 	$(VENV)/bin/uvicorn grobid_metadata_enricher.api:app --host $(HOST) --port $(PORT)
