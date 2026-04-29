@@ -23,7 +23,10 @@ lint:
 		src/ \
 		tests/ \
 		benchmarks/
-	$(VENV)/bin/mypy src/
+	$(VENV)/bin/mypy \
+		src/ \
+		tests/ \
+		benchmarks/
 	$(VENV)/bin/pylint src/
 
 format:
