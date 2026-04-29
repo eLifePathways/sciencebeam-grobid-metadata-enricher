@@ -19,7 +19,10 @@ install:
 	uv sync --extra dev --extra bench
 
 lint:
-	$(VENV)/bin/ruff check src/ tests/
+	$(VENV)/bin/ruff check \
+		src/ \
+		tests/ \
+		benchmarks/
 	$(VENV)/bin/mypy src/
 	$(VENV)/bin/pylint src/
 
