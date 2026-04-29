@@ -247,7 +247,7 @@ def process_one(
     }
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, type=Path)
     ap.add_argument("--mode", choices=["smoke", "full"], required=True)

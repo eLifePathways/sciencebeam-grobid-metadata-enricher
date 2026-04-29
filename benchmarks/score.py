@@ -167,7 +167,7 @@ def score(
                     entry["vs_baseline"] = {
                         "n_paired": len(arr_c),
                         "delta_mean": float(np.mean(arr_c - arr_b)),
-                        "wilcoxon_p": _paired(arr_c, arr_b),
+                        "wilcoxon_p": _paired(arr_c, arr_b),  # type: ignore[dict-item]
                     }
             out["metrics"][metric] = entry
         return out
@@ -350,7 +350,7 @@ def _render_tokens_markdown(tokens: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True, type=Path, help="Current run directory (expects per_document.jsonl)")
     ap.add_argument("--config", required=True, type=Path)
