@@ -7,7 +7,7 @@ CFG_N_RESAMPLES = 50
 CFG_CL = 0.95
 
 
-def _row(corpus: str, rid: str, tokens=None) -> dict:
+def _row(corpus: str, rid: str, tokens: dict | None = None) -> dict:
     row = {
         "corpus": corpus,
         "record_id": rid,
@@ -22,8 +22,8 @@ def _row(corpus: str, rid: str, tokens=None) -> dict:
 def _tok(
     prompt: int,
     completion: int,
-    by_stage=None,
-    by_group=None,
+    by_stage: dict | None = None,
+    by_group: dict | None = None,
     cached: int = 0,
     reasoning: int = 0,
     n_calls: int = 1,
