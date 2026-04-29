@@ -14,7 +14,6 @@ import yaml
 
 from benchmarks.gold import extract_gold
 from grobid_metadata_enricher.clients import (
-    AoaiPool,
     DEFAULT_OPENAI_API_KEY,
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
@@ -22,6 +21,7 @@ from grobid_metadata_enricher.clients import (
     DEFAULT_PARSER_URLS,
     PARSER_GROBID,
     SUPPORTED_PARSERS,
+    AoaiPool,
     OpenAIClient,
     resolve_parser_url,
     run_grobid,

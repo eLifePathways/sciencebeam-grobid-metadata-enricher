@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from benchmarks.score import score, render_markdown
-
+from benchmarks.score import render_markdown, score
 
 METRICS = ["title_match", "authors_recall"]
 CFG_N_RESAMPLES = 200
