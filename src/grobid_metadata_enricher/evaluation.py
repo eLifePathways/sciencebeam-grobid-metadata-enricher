@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from rapidfuzz.distance import Levenshtein as _Levenshtein
+
 WORD_RE = re.compile(r"[A-Za-z0-9]+", re.UNICODE)
 
 
@@ -69,6 +71,10 @@ def identifier_recall(gold: List[str], predicted: List[str]) -> float:
     return len(gold_values & predicted_values) / max(1, len(gold_values))
 
 
+def levenshtein_sim(a: str, b: str) -> float:
+    return _Levenshtein.normalized_similarity(a or "", b or "")
+
+
 def language_match(gold: str, predicted: str) -> Optional[int]:
     if not gold:
         return None
@@ -101,6 +107,11 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
         max(jaccard_recall(abstract, predicted_abstract) for abstract in gold_abstracts)
         if gold_abstracts
         else jaccard_recall(gold.get("abstract", ""), predicted_abstract)
+    )
+    metrics["abstract_edit_sim"] = (
+        max(levenshtein_sim(abstract, predicted_abstract) for abstract in gold_abstracts)
+        if gold_abstracts
+        else levenshtein_sim(gold.get("abstract", ""), predicted_abstract)
     )
 
     predicted_keywords = predicted.get("keywords") or []

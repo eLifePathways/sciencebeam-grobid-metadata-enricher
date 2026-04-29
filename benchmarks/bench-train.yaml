@@ -51,7 +51,20 @@ seeds:
   sample: 42
   llm: 0
 
-metrics: [title_match, authors_recall, abstract_recall, keywords_recall, language_match, identifiers_recall]
+metrics:
+  - title_match
+  - authors_recall
+  - abstract_recall
+  - abstract_edit_sim
+  - keywords_recall
+  - language_match
+  - identifiers_recall
+  # Gated on the corresponding gold keys; silent for biorxiv / scielo_preprints.
+  - body_section_recall
+  - figure_caption_recall
+  - table_caption_recall
+  - reference_recall
+  - reference_recall_combined
 
 bootstrap:
   n_resamples: 200
