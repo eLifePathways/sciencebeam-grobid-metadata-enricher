@@ -102,6 +102,10 @@ with-phoenix-clean:
 	$(COMPOSE_PHOENIX) down -v
 
 
+grobid-start:
+	docker compose up -d --wait grobid
+
+
 benchmark-build:
 	docker compose --profile benchmark build benchmark
 
@@ -210,19 +214,19 @@ benchmark-cross-parser: benchmark-build sciencebeam-patch-figure-model
 	@cat benchmarks/runs/$(BENCHMARK_RUN)-sciencebeam/report.md
 
 
-benchmark-train-predict:
+benchmark-train-predict-grobid: grobid-start
 	docker compose --profile benchmark run --rm benchmark \
 		python -m benchmarks.predict \
 			--config benchmarks/bench-train.yaml \
 			--mode   $(BENCHMARK_MODE) \
-			--out    benchmarks/runs/train/$(BENCHMARK_RUN)
+			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-grobid
 
-benchmark-train-score:
+benchmark-train-score-grobid:
 	docker compose --profile benchmark run --rm --no-deps benchmark \
 		python -m benchmarks.score \
-			--run    benchmarks/runs/train/$(BENCHMARK_RUN) \
+			--run    benchmarks/runs/train/$(BENCHMARK_RUN)-grobid \
 			--config benchmarks/bench-train.yaml \
-			--out    benchmarks/runs/train/$(BENCHMARK_RUN)/report.md
-	@cat benchmarks/runs/train/$(BENCHMARK_RUN)/report.md
+			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/report.md
+	@cat benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/report.md
 
-benchmark-train: benchmark-build benchmark-train-predict benchmark-train-score
+benchmark-train-grobid: benchmark-build benchmark-train-predict-grobid benchmark-train-score-grobid
