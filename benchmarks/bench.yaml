@@ -53,6 +53,7 @@ metrics:
   - title_match
   - authors_recall
   - abstract_recall
+  - abstract_edit_sim
   - keywords_recall
   - language_match
   - identifiers_recall
