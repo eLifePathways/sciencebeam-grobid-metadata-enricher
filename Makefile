@@ -27,8 +27,14 @@ lint:
 	$(VENV)/bin/pylint src/
 
 format:
-	$(VENV)/bin/ruff check --fix src/ tests/
-	$(VENV)/bin/ruff format src/ tests/
+	$(VENV)/bin/ruff check --fix \
+		src/ \
+		tests/ \
+		benchmarks/
+	$(VENV)/bin/ruff format \
+		src/ \
+		tests/ \
+		benchmarks/
 
 test:
 	$(VENV)/bin/pytest \
