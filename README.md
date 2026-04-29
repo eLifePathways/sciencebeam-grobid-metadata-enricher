@@ -20,16 +20,15 @@ A pipeline that takes a scientific paper PDF (plus optional OAI-DC or JATS XML) 
 Exposed as a **FastAPI service** (primary usage) and as a **CLI batch processor**.
 
 ## Prerequisites
-- Docker + Docker Compose (for the recommended API/benchmark approach)
-- Python 3.10+ with [uv](https://docs.astral.sh/uv/) (for local development)
+- Python 3.10+ (3.11+ recommended)
 - One of:
   - AOAI pool JSON (round-robin backends), or
   - OpenAI API key + model name
 
-### LLM configuration
+> **Note**: when using Docker Compose (`make start`), Grobid and pdfalto are bundled in the image — no separate setup needed. LLM credentials are required regardless of how you run the pipeline.
 
-#### AOAI pool JSON
-A pool of endpoint configs; the runner round-robins across them.
+### AOAI pool JSON
+This is a pool of endpoint configs; the runner round‑robins across them.
 
 Example file format:
 ```json
@@ -44,16 +43,10 @@ Example file format:
 ]
 ```
 
-#### OpenAI API key + model
-Set environment variables or pass CLI flags:
+### OpenAI API key + model
 ```bash
 export OPENAI_API_KEY=...
 export OPENAI_MODEL=gpt-4o-mini
-```
-
-Or pass as CLI flags:
-```
---openai-api-key ... --openai-model gpt-4o-mini
 ```
 
 ## Quick start (Docker Compose)
@@ -71,7 +64,6 @@ make start        # build + start; API at http://localhost:8000
 make stop         # stop containers (keeps volumes)
 make logs         # tail logs (all services)
 make logs-api     # tail logs (API only — less grobid noise)
-make shell        # open bash inside the running API container
 make clean        # stop and delete volumes
 ```
 
@@ -80,17 +72,19 @@ The API docs are at http://localhost:8000/api/docs.
 ## Install (local development)
 
 ```bash
-uv sync --extra dev
+make install
+# or manually:
+uv sync --extra dev --extra bench
 ```
 
 Common dev commands:
 ```bash
-make lint         # ruff + mypy + pylint
-make format       # ruff --fix + ruff format
-make test         # pytest (unit tests)
-make test-bench   # pytest (benchmark scoring/token tests)
-make check        # lint + test + test-bench in one shot
-make serve        # run the API locally (no Docker)
+make lint           # ruff + mypy + pylint
+make format         # ruff --fix + ruff format
+make test           # pytest (unit + benchmark tests)
+make check          # lint + test in one shot
+make serve          # run the API locally (no Docker)
+make serve-reload   # run the API locally with auto-reload
 ```
 
 ## CLI batch mode
@@ -104,19 +98,7 @@ docker run -d --rm --name grobid -p 8070:8070 lfoppiano/grobid:0.9.0-crf
 ```
 
 ### Grobid (local install)
-If you prefer a local install, follow the official Grobid instructions:
-1. Install Java (Grobid requires Java 8+).
-2. Clone the Grobid repo and build:
-   ```bash
-   git clone https://github.com/kermitt2/grobid.git
-   cd grobid
-   ./gradlew clean install
-   ```
-3. Start the service:
-   ```bash
-   ./gradlew run
-   ```
-   By default it serves at `http://localhost:8070/api`.
+Follow the [official Grobid instructions](https://grobid.readthedocs.io/en/latest/Install-Grobid/). By default it serves at `http://localhost:8070/api`.
 
 ### pdfalto
 Install [pdfalto](https://github.com/kermitt2/pdfalto) and ensure it is on PATH, or pass its location via `--pdfalto /path/to/pdfalto`.
@@ -164,10 +146,40 @@ Run (parquet input):
 grobid-metadata-enricher \
   --manifest /path/to/scielo_preprints.parquet \
   --pool /path/to/aoai_pool.json \
+  --output-dir /path/to/output \
+  --pdfalto /path/to/pdfalto
+```
+
+Note: parquet input requires `pyarrow`:
+```bash
+pip install pyarrow
+```
+
+### ScienceBeam Parser backend
+
+To use ScienceBeam Parser instead of GROBID, start its sidecar first:
+
+```bash
+make sciencebeam-start   # start the ScienceBeam Parser container (port 8071)
+make sciencebeam-stop    # stop it
+```
+
+`sciencebeam-start` also applies a one-time patch that fixes a missing `config.json` in the upstream image (`0.1.18`) which causes HTTP 500 errors on every request. The patch is idempotent — re-running is safe.
+
+Then pass `--parser sciencebeam` (or set `PARSER=sciencebeam` for benchmarks):
+
+```bash
+grobid-metadata-enricher \
+  --parser sciencebeam \
+  --manifest /path/to/manifest.csv \
+  --openai-api-key $OPENAI_API_KEY \
+  --openai-model gpt-4o-mini \
   --output-dir /path/to/output
 ```
 
-Key flags:
+### Key flags
+- `--parser`: upstream PDF parser, `grobid` (default) or `sciencebeam`
+- `--grobid-url`: parser endpoint URL (defaults to `localhost:8070/api` for grobid, `localhost:8071/api` for sciencebeam; honours `GROBID_URL` env)
 - `--workers`: number of docs processed in parallel
 - `--per-document-llm-workers`: LLM calls per doc in parallel (after Grobid/pdfalto)
 - `--llm-concurrency`: global LLM in-flight cap
@@ -189,22 +201,33 @@ Key flags:
 Benchmarks run via Docker Compose (pdfalto is bundled in the image). Set `HF_TOKEN` in `.env`, then:
 
 ```bash
-make benchmark                                               # smoke run (25 docs, fast) — uses validation split
-make benchmark BENCHMARK_MODE=full                           # full run on validation split
-make benchmark BENCHMARK_RUN=my-run                         # custom output dir under benchmarks/runs/
-make benchmark-train                                         # smoke run on train split (local development)
-make benchmark-train BENCHMARK_MODE=full                     # full run on train split
+make benchmark                           # smoke run (25 docs/corpus, fast — default)
+make benchmark BENCHMARK_MODE=full       # full run (all docs)
+make benchmark BENCHMARK_RUN=my-run     # custom output directory name
+make benchmark PARSER=sciencebeam       # use ScienceBeam Parser instead of GROBID
 ```
 
-Results are written to `benchmarks/runs/<BENCHMARK_RUN>/` and a Markdown report is printed to stdout. Train-split results go under `benchmarks/runs/train/<BENCHMARK_RUN>/`.
+Outputs land in `benchmarks/runs/<BENCHMARK_RUN>/` (default: `benchmarks/runs/local/`). The aggregated report is written to `report.md` in that directory and printed at the end of the run.
 
-`make benchmark` (and CI) use `bench.yaml` with the **validation split**. `make benchmark-train` uses `bench-train.yaml` with the **train split** — use the train target locally when tuning prompts so that CI validation scores remain unbiased.
+### Cross-parser comparison
 
-**Supported corpora**: ore, pkp, scielo_br, scielo_mx, scielo_preprints-jats (all JATS — full content + reference metrics). All corpora run the 3-pass content extraction and Crossref reference enrichment.
+Run the smoke benchmark against both GROBID and ScienceBeam Parser back-to-back and diff their `report.md` outputs:
 
-The CI benchmark report includes per-stage LLM token usage (prompt / completion / total, plus per-doc averages) so cost is visible on every PR. Grobid/pdfalto outputs are cached across CI runs keyed on the bench.yaml + dataset revision, so repeated runs skip the extraction step entirely.
+```bash
+make benchmark-cross-parser                        # default: smoke mode
+make benchmark-cross-parser BENCHMARK_MODE=full    # full run
+```
 
-See [benchmarks/README.md](benchmarks/README.md) for dataset layout, CI setup, and how to extend to new corpora.
+Outputs land in `benchmarks/runs/<BENCHMARK_RUN>-grobid/` and `benchmarks/runs/<BENCHMARK_RUN>-sciencebeam/`.
+
+### Training-set benchmark (local only)
+
+To benchmark on the training split without polluting the validation split used by CI:
+
+```bash
+make benchmark-train                     # build + predict + score
+make benchmark-train BENCHMARK_MODE=full
+```
 
 ## LLM observability
 
@@ -255,4 +278,4 @@ make benchmark
 ## Notes
 - Grobid can return 503 under load. Re-run with `--rerun` or lower `--workers` if that happens.
 - Results depend on LLM backend behavior; parallelism can change output order across backends.
-- Content extraction (body/figures/tables/references) runs on all supported corpora — all are now JATS. Use `make benchmark-train` locally to avoid polluting the validation split used by CI.
+- Content extraction (body/figures/tables/references) runs on all supported corpora — all are now JATS. Use `make benchmark-train` locally (see [Training-set benchmark](#training-set-benchmark-local-only)) to avoid polluting the validation split used by CI.
