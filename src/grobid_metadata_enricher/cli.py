@@ -4,12 +4,14 @@ import argparse
 from pathlib import Path
 
 from .clients import (
-    DEFAULT_GROBID_URL,
     DEFAULT_OPENAI_API_KEY,
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
+    DEFAULT_PARSER,
     DEFAULT_PDFALTO_BIN,
     DEFAULT_POOL_PATH,
+    SUPPORTED_PARSERS,
+    resolve_parser_url,
 )
 from .pipeline import PipelineSettings, run_pipeline
 
@@ -22,7 +24,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openai-model", type=str, default=DEFAULT_OPENAI_MODEL)
     parser.add_argument("--openai-base-url", type=str, default=DEFAULT_OPENAI_BASE_URL)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--grobid-url", type=str, default=DEFAULT_GROBID_URL)
+    # default=None lets resolve_parser_url derive the URL from --parser /
+    # GROBID_URL / per-parser default, so `--parser sciencebeam` works on
+    # its own without an explicit `--grobid-url http://localhost:8071/api`.
+    parser.add_argument(
+        "--grobid-url",
+        type=str,
+        default=None,
+        help=(
+            "Parser endpoint URL. Defaults to localhost:8070 for grobid, "
+            "localhost:8071 for sciencebeam (overridable with GROBID_URL env)."
+        ),
+    )
+    parser.add_argument(
+        "--parser",
+        type=str,
+        choices=list(SUPPORTED_PARSERS),
+        default=DEFAULT_PARSER,
+        help="Upstream PDF parser backend (default: %(default)s).",
+    )
     parser.add_argument("--pdfalto", type=Path, default=DEFAULT_PDFALTO_BIN)
     parser.add_argument("--pdfalto-start", type=int, default=1)
     parser.add_argument("--pdfalto-end", type=int, default=2)
@@ -43,7 +63,8 @@ def main() -> None:
         openai_model=args.openai_model,
         openai_base_url=args.openai_base_url,
         output_dir=args.output_dir,
-        grobid_url=args.grobid_url,
+        grobid_url=resolve_parser_url(args.parser, args.grobid_url),
+        parser=args.parser,
         pdfalto_bin=args.pdfalto,
         pdfalto_start_page=args.pdfalto_start,
         pdfalto_end_page=args.pdfalto_end,

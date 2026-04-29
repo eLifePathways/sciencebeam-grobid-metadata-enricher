@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from benchmarks.score import score, render_markdown
-
+from benchmarks.score import render_markdown, score
 
 METRICS = ["title_match", "authors_recall"]
 CFG_N_RESAMPLES = 200
 CFG_CL = 0.95
 
 
-def _row(corpus, rid, grobid, llm):
+def _row(corpus: str, rid: str, grobid: tuple, llm: tuple) -> dict:
     return {
         "corpus": corpus, "record_id": rid,
         "grobid_metrics": {"title_match": grobid[0], "authors_recall": grobid[1]},
@@ -18,7 +17,7 @@ def _row(corpus, rid, grobid, llm):
     }
 
 
-def test_identical_runs_wilcoxon_p_is_one():
+def test_identical_runs_wilcoxon_p_is_one() -> None:
     rows = [_row("scielo_preprints", f"r{i}", (0.5, 0.7), (0.5, 0.7)) for i in range(20)]
     result = score(rows, METRICS, CFG_N_RESAMPLES, CFG_CL, baseline_rows=rows)
     overall = result["overall"]["metrics"]["title_match"]
@@ -32,7 +31,7 @@ def test_identical_runs_wilcoxon_p_is_one():
     assert overall["vs_baseline"]["wilcoxon_p"] == 1.0
 
 
-def test_llm_beats_grobid_has_small_p():
+def test_llm_beats_grobid_has_small_p() -> None:
     rng = np.random.default_rng(0)
     rows = []
     for i in range(30):
@@ -46,7 +45,7 @@ def test_llm_beats_grobid_has_small_p():
     assert e["wilcoxon_p_llm_vs_grobid"] < 0.01
 
 
-def test_bootstrap_reproducibility_same_seed():
+def test_bootstrap_reproducibility_same_seed() -> None:
     # Same inputs + same seed: same CI bounds.
     rows = [_row("scielo_preprints", f"r{i}", (0.4, 0.5), (0.6, 0.7)) for i in range(25)]
     a = score(rows, METRICS, CFG_N_RESAMPLES, CFG_CL)
@@ -56,7 +55,7 @@ def test_bootstrap_reproducibility_same_seed():
             assert a["overall"]["metrics"][m][side] == b["overall"]["metrics"][m][side]
 
 
-def test_per_corpus_sections_and_overall_n():
+def test_per_corpus_sections_and_overall_n() -> None:
     rows = [
         _row("scielo_preprints", "a", (0.5, 0.5), (0.7, 0.6)),
         _row("scielo_preprints", "b", (0.4, 0.5), (0.6, 0.7)),
@@ -68,7 +67,7 @@ def test_per_corpus_sections_and_overall_n():
     assert result["other"]["n"] == 1
 
 
-def test_render_markdown_contains_ci_and_wilcoxon_columns():
+def test_render_markdown_contains_ci_and_wilcoxon_columns() -> None:
     rows = [_row("scielo_preprints", f"r{i}", (0.4, 0.5), (0.6, 0.7)) for i in range(10)]
     result = score(rows, METRICS, CFG_N_RESAMPLES, CFG_CL, baseline_rows=rows)
     md = render_markdown(result, METRICS)

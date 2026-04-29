@@ -16,9 +16,42 @@ import httpx
 from .telemetry import get_tracer
 
 DEFAULT_POOL_PATH = Path(os.getenv("AOAI_POOL_PATH", "aoai_pool.json"))
-DEFAULT_GROBID_URL = os.getenv("GROBID_URL", "http://localhost:8070/api")
 DEFAULT_GROBID_TIMEOUT = int(os.getenv("GROBID_TIMEOUT", "60"))
 DEFAULT_PDFALTO_BIN = Path(os.getenv("PDFALTO_BIN", "pdfalto"))
+# Upstream PDF parser: "grobid" (default, lfoppiano/grobid:0.9.0-crf compatible)
+# or "sciencebeam" (eLifePathways/sciencebeam-parser). Both expose
+# /api/processFulltextDocument and /api/isalive on the same port; the
+# difference is which form fields they honour and whether they require an
+# explicit Accept header to negotiate the response media type.
+PARSER_GROBID = "grobid"
+PARSER_SCIENCEBEAM = "sciencebeam"
+SUPPORTED_PARSERS = (PARSER_GROBID, PARSER_SCIENCEBEAM)
+DEFAULT_PARSER = os.getenv("PARSER", PARSER_GROBID)
+# Per-parser default URLs. Picked so `--parser sciencebeam` works on its
+# own without also having to pass `--grobid-url http://localhost:8071/api`,
+# which is the port the compose `sciencebeam-parser` service publishes.
+DEFAULT_PARSER_URLS = {
+    PARSER_GROBID: "http://localhost:8070/api",
+    PARSER_SCIENCEBEAM: "http://localhost:8071/api",
+}
+
+
+def resolve_parser_url(parser: str = DEFAULT_PARSER, override: Optional[str] = None) -> str:
+    """Return the URL for the given parser. Precedence: explicit override
+    argument > GROBID_URL env var > per-parser default. The GROBID_URL env
+    name is parser-agnostic (kept that way for compose.yml + CI back-compat)
+    so it overrides regardless of the parser choice."""
+    if override:
+        return override
+    env_url = os.getenv("GROBID_URL")
+    if env_url:
+        return env_url
+    return DEFAULT_PARSER_URLS.get(parser, DEFAULT_PARSER_URLS[PARSER_GROBID])
+
+
+# Resolved at import time for back-compat with callers that read
+# DEFAULT_GROBID_URL directly (api.py, PipelineSettings default field).
+DEFAULT_GROBID_URL = resolve_parser_url(DEFAULT_PARSER)
 DEFAULT_OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEFAULT_OPENAI_MODEL = os.getenv("OPENAI_MODEL")
 DEFAULT_OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -258,11 +291,33 @@ def run_grobid(
     timeout: int = DEFAULT_GROBID_TIMEOUT,
     consolidate_header: int = 0,
     consolidate_citations: int = 0,
+    parser: str = DEFAULT_PARSER,
 ) -> None:
+    """POST a PDF to the configured parser's /processFulltextDocument and write the response TEI to tei_path.
+
+    parser=sciencebeam drops the GROBID-only form fields (teiCoordinates,
+    consolidate*) which sciencebeam-parser ignores. No explicit Accept
+    header: lfoppiano/grobid returns 406 for application/tei+xml,
+    sciencebeam-parser maps the httpx default */* to TEI. A 2xx body
+    without a <TEI marker raises here so a malformed parser response
+    cannot become a silent empty-TEI parse downstream.
+    """
+    if parser not in SUPPORTED_PARSERS:
+        raise ValueError(
+            f"Unsupported parser {parser!r}; expected one of {SUPPORTED_PARSERS}"
+        )
     ensure_parent(tei_path)
     if tei_path.exists() and tei_path.stat().st_size > 0:
         return
     url = f"{grobid_url}/processFulltextDocument"
+    if parser == PARSER_GROBID:
+        form_data = {
+            "teiCoordinates": "1",
+            "consolidateHeader": str(int(consolidate_header)),
+            "consolidateCitations": str(int(consolidate_citations)),
+        }
+    else:
+        form_data = {}
     deadline = time.monotonic() + timeout
     while True:
         try:
@@ -270,11 +325,7 @@ def run_grobid(
                 response = httpx.post(
                     url,
                     files={"input": (pdf_path.name, pdf_file, "application/pdf")},
-                    data={
-                        "teiCoordinates": "1",
-                        "consolidateHeader": str(int(consolidate_header)),
-                        "consolidateCitations": str(int(consolidate_citations)),
-                    },
+                    data=form_data,
                     timeout=httpx.Timeout(
                         connect=_GROBID_CONNECT_TIMEOUT,
                         read=float(timeout),
@@ -283,19 +334,31 @@ def run_grobid(
                     ),
                 )
             response.raise_for_status()
-            tei_path.write_text(response.text, encoding="utf-8")
+            body = response.text
+            # Surface the silent-failure case where the upstream returns 200
+            # but the body is not a TEI document (e.g. an HTML error page or
+            # an empty body). Without this, downstream extract_tei_fields
+            # parses an empty document and the pipeline reports zero metrics
+            # without ever raising.
+            if "<TEI" not in body and "<tei" not in body:
+                snippet = body[:200].replace("\n", " ")
+                raise RuntimeError(
+                    f"{parser} returned non-TEI response from {url} "
+                    f"(content-type={response.headers.get('content-type', '?')}): {snippet!r}"
+                )
+            tei_path.write_text(body, encoding="utf-8")
             return
         except httpx.ConnectError as exc:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise RuntimeError(
-                    f"could not connect to GROBID at {grobid_url} after {timeout}s"
+                    f"could not connect to {parser} at {grobid_url} after {timeout}s"
                 ) from exc
             time.sleep(min(_GROBID_RETRY_INTERVAL, remaining))
         except httpx.TimeoutException as exc:
-            raise RuntimeError(f"GROBID request timed out after {timeout}s") from exc
+            raise RuntimeError(f"{parser} request timed out after {timeout}s") from exc
         except httpx.HTTPStatusError as exc:
-            raise RuntimeError(f"GROBID returned HTTP {exc.response.status_code}") from exc
+            raise RuntimeError(f"{parser} returned HTTP {exc.response.status_code}") from exc
 
 
 def run_pdfalto(
