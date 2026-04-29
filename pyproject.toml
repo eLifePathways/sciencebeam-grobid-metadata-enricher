@@ -34,6 +34,11 @@ bench = [
     "pandas>=2.3.3",
 ]
 
+[dependency-groups]
+dev = [
+    "types-pyyaml>=6.0.12.20260408",
+]
+
 [project.scripts]
 grobid-metadata-enricher = "grobid_metadata_enricher.cli:main"
 
@@ -83,8 +88,3 @@ no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 ignore_missing_imports = true
-
-[dependency-groups]
-dev = [
-    "types-pyyaml>=6.0.12.20260408",
-]
