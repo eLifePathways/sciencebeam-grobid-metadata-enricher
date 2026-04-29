@@ -159,14 +159,15 @@ def score(
                         c = r.get("llm_metrics", {}).get(metric)
                         b = baseline_index[key].get("llm_metrics", {}).get(metric)
                         if c is not None and b is not None:
-                            paired_cur.append(c); paired_base.append(b)
+                            paired_cur.append(c)
+                            paired_base.append(b)
                 if paired_cur:
                     arr_c = np.asarray(paired_cur, dtype=float)
                     arr_b = np.asarray(paired_base, dtype=float)
                     entry["vs_baseline"] = {
                         "n_paired": len(arr_c),
                         "delta_mean": float(np.mean(arr_c - arr_b)),
-                        "wilcoxon_p": _paired(arr_c, arr_b),
+                        "wilcoxon_p": _paired(arr_c, arr_b),  # type: ignore[dict-item]
                     }
             out["metrics"][metric] = entry
         return out
@@ -252,7 +253,7 @@ def render_markdown(result: Dict[str, Any], metrics: List[str], title: str = "Be
         has_baseline = any("vs_baseline" in section["metrics"][m] for m in metrics)
         # Attach a per-metric tokens column (summing by the metric's stage-group) when
         # token data is available for this section. Unknown metric mappings render "—".
-        has_tokens = bool(section_tokens and (section_tokens.get("by_metric_group") or {}))
+        has_tokens = bool(section_tokens and section_tokens.get("by_metric_group"))
         header = ["Metric", "Grobid (95% CI)", "LLM (95% CI)", "Δ LLM−Grobid", "Wilcoxon p"]
         if has_baseline:
             header += ["Δ vs baseline", "p vs baseline"]
@@ -262,11 +263,11 @@ def render_markdown(result: Dict[str, Any], metrics: List[str], title: str = "Be
         lines.append("|" + "|".join(["---"] * len(header)) + "|")
         for m in metrics:
             e = section["metrics"][m]
-            g, l = e["grobid"], e["llm"]
+            g, llm = e["grobid"], e["llm"]
             row = [
                 m,
                 f"{g['mean']:.3f} [{g['ci_low']:.3f}, {g['ci_high']:.3f}]",
-                f"{l['mean']:.3f} [{l['ci_low']:.3f}, {l['ci_high']:.3f}]",
+                f"{llm['mean']:.3f} [{llm['ci_low']:.3f}, {llm['ci_high']:.3f}]",
                 f"{e['delta_llm_minus_grobid']:+.3f}" if e['delta_llm_minus_grobid'] is not None else "n/a",
                 f"{e['wilcoxon_p_llm_vs_grobid']:.3g}" if e['wilcoxon_p_llm_vs_grobid'] is not None else "n/a",
             ]
@@ -349,7 +350,7 @@ def _render_tokens_markdown(tokens: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True, type=Path, help="Current run directory (expects per_document.jsonl)")
     ap.add_argument("--config", required=True, type=Path)
