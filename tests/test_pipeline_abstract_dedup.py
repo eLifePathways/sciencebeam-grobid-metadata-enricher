@@ -5,10 +5,10 @@ from grobid_metadata_enricher.pipeline import dedupe_blocks
 
 class TestDedupeBlocks:
     def test_empty(self) -> None:
-        assert dedupe_blocks([]) == []
+        assert not dedupe_blocks([])
 
     def test_drops_blank(self) -> None:
-        assert dedupe_blocks(["", "   ", "\t\n"]) == []
+        assert not dedupe_blocks(["", "   ", "\t\n"])
 
     def test_keeps_distinct(self) -> None:
         assert dedupe_blocks(["one", "two", "three"]) == ["one", "two", "three"]
