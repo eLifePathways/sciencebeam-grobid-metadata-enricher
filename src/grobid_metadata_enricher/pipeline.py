@@ -1088,9 +1088,9 @@ def _build_prediction_inner(
     if not metadata.get("keywords") and header_metadata.get("keywords"):
         metadata["keywords"] = header_metadata["keywords"]
 
-    multilingual_abstracts = build_multilingual_abstract_blocks(context)
-    if multilingual_abstracts:
-        metadata["abstract"] = "\n\n".join(multilingual_abstracts)
+    # multilingual_abstracts = build_multilingual_abstract_blocks(context)
+    # if multilingual_abstracts:
+    #     metadata["abstract"] = "\n\n".join(multilingual_abstracts)
 
     targets = keyword_target_languages(metadata.get("keywords") or [], context.lines)
     if targets:
