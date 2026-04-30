@@ -58,6 +58,15 @@ DISCLAIMER_RE = re.compile(
 )
 ABSTRACT_MARKER_RE = re.compile(r"\b(abstract|resumo|resumen)\b", re.IGNORECASE)
 ENGLISH_MARKER_RE = re.compile(r"\babstract\b", re.IGNORECASE)
+# Anchored at line start so prose mentions ("Materials and Methods are described") don't trigger.
+NEXT_SECTION_RE = re.compile(
+    r"^\s*(introduction|introduccion|introdução|background|materials?(\s+and\s+methods?)?|methods?|"
+    r"métodos|metodos|metodologia|results?|resultados|discussion|discussão|discusión|"
+    r"conclusion|conclusiones|conclusões|references|referencias|referências|"
+    r"keywords?|palabras\s+clave|palavras-chave|acknowledg|agradec|funding|financiamento|"
+    r"abstract|resumo|resumen)\b",
+    re.IGNORECASE,
+)
 PORTUGUESE_MARKER_RE = re.compile(r"\bresumo\b", re.IGNORECASE)
 SPANISH_MARKER_RE = re.compile(r"\bresumen\b", re.IGNORECASE)
 ENGLISH_START_RE = re.compile(r"^\s*(abstract|the|this|we|in|a|an)\b", re.IGNORECASE)
@@ -259,7 +268,12 @@ def marker_windows(
     if indices:
         for index in indices[:max_blocks]:
             start = max(0, index - prefix_lines)
-            end = min(len(lines), index + suffix_lines)
+            tail_cap = min(len(lines), index + suffix_lines)
+            end = tail_cap
+            for j in range(index + 1, tail_cap):
+                if NEXT_SECTION_RE.match(lines[j].get("text", "") or ""):
+                    end = j
+                    break
             text = " ".join(line["text"] for line in lines[start:end])
             blocks.append(normalize_whitespace(text))
     else:
@@ -281,9 +295,7 @@ def dedupe_tagged_blocks(blocks: Sequence[Tuple[str, str]]) -> List[Tuple[str, s
 
 
 def dedupe_blocks(blocks: Sequence[str]) -> List[str]:
-    # Drop empty blocks, exact duplicates, and any block whose normalised text
-    # is already contained in a longer block (e.g. a clean TEI abstract that
-    # also appears as a prefix of a noisy OCR marker-window block).
+    # Drop empties, exact duplicates, and any block strictly contained in another.
     keys = [normalize_whitespace(text).lower() for text in blocks]
     seen: set[str] = set()
     unique: List[str] = []
@@ -1103,11 +1115,8 @@ def _build_prediction_inner(
     if not metadata.get("keywords") and header_metadata.get("keywords"):
         metadata["keywords"] = header_metadata["keywords"]
 
-    # Stage 1 (above) chose the single best abstract from labelled candidates.
-    # The multilingual concat path is only useful when the document genuinely
-    # ships multiple language versions of the abstract; for monolingual papers
-    # the OCR marker-window block can otherwise duplicate the TEI abstract and
-    # bleed into the introduction.
+    # Only concat when the doc actually has multiple language abstracts; one
+    # block means the choose_abstract_candidate result above is already correct.
     multilingual_abstracts = build_multilingual_abstract_blocks(context)
     if len(multilingual_abstracts) > 1:
         metadata["abstract"] = "\n\n".join(multilingual_abstracts)
