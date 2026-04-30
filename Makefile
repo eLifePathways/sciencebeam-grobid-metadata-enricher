@@ -3,7 +3,8 @@
         with-phoenix-start with-phoenix-stop with-phoenix-logs with-phoenix-clean \
         benchmark-build benchmark benchmark-train-predict benchmark-train-score benchmark-train \
         sciencebeam-start sciencebeam-stop sciencebeam-patch-figure-model benchmark-cross-parser \
-        show-regressions show-improvements
+        show-regressions show-improvements \
+        benchmark-train-predict-grobid benchmark-train-score-grobid benchmark-train-grobid benchmark-train-rescore-grobid
 
 -include .env
 export
@@ -245,6 +246,12 @@ benchmark-train-score-grobid:
 	@cat benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/report.md
 
 benchmark-train-grobid: benchmark-build benchmark-train-predict-grobid benchmark-train-score-grobid
+
+# Force a full re-predict + re-score (use when adding new score fields requires
+# fresh per-document rows, e.g. after adding title_edit_sim).
+benchmark-train-rescore-grobid:
+	rm -f benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/per_document.jsonl
+	$(MAKE) benchmark-train-grobid
 
 
 # Find and export regression/improvement cases for a given metric and corpus.
