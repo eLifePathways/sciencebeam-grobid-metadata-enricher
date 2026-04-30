@@ -58,6 +58,25 @@ DISCLAIMER_RE = re.compile(
 )
 ABSTRACT_MARKER_RE = re.compile(r"\b(abstract|resumo|resumen)\b", re.IGNORECASE)
 ENGLISH_MARKER_RE = re.compile(r"\babstract\b", re.IGNORECASE)
+# Trailing (?!\s*:) rejects structured-abstract sub-headings like "Background:" /
+# "Methods:" which are part of the abstract, not the next section.
+NEXT_SECTION_RE = re.compile(
+    r"^\s*(?:[\dIVXivx]+(?:\.\d+)*[\.\)]?\s+)?"
+    r"(?:introduction|introduccion|introdução|background|"
+    r"materials?(?:\s+and\s+methods?)?|methods?|"
+    r"métodos|metodos|metodologia|"
+    r"results?|resultados|"
+    r"discussion|discussão|discusión|"
+    r"conclusion|conclusiones|conclusões|"
+    r"references|referencias|referências|"
+    r"keywords?|palabras\s+clave|palavras-chave|"
+    r"acknowledg|agradec|funding|financiamento|"
+    r"highlights|significance|"
+    r"author\s+summary|plain\s+language\s+summary|"
+    r"abstract|resumo|resumen)"
+    r"(?!\w)(?!\s*:)",
+    re.IGNORECASE,
+)
 PORTUGUESE_MARKER_RE = re.compile(r"\bresumo\b", re.IGNORECASE)
 SPANISH_MARKER_RE = re.compile(r"\bresumen\b", re.IGNORECASE)
 ENGLISH_START_RE = re.compile(r"^\s*(abstract|the|this|we|in|a|an)\b", re.IGNORECASE)
@@ -259,7 +278,12 @@ def marker_windows(
     if indices:
         for index in indices[:max_blocks]:
             start = max(0, index - prefix_lines)
-            end = min(len(lines), index + suffix_lines)
+            tail_cap = min(len(lines), index + suffix_lines)
+            end = tail_cap
+            for j in range(index + 1, tail_cap):
+                if NEXT_SECTION_RE.match(lines[j].get("text", "") or ""):
+                    end = j
+                    break
             text = " ".join(line["text"] for line in lines[start:end])
             blocks.append(normalize_whitespace(text))
     else:
@@ -281,11 +305,14 @@ def dedupe_tagged_blocks(blocks: Sequence[Tuple[str, str]]) -> List[Tuple[str, s
 
 
 def dedupe_blocks(blocks: Sequence[str]) -> List[str]:
-    seen = set()
+    # Drop empties, exact duplicates, and any block strictly contained in another.
+    keys = [normalize_whitespace(text).lower() for text in blocks]
+    seen: set[str] = set()
     unique: List[str] = []
-    for text in blocks:
-        key = normalize_whitespace(text).lower()
+    for text, key in zip(blocks, keys):
         if not key or key in seen:
+            continue
+        if any(key != other and key in other for other in keys):
             continue
         seen.add(key)
         unique.append(text)
@@ -1088,8 +1115,10 @@ def _build_prediction_inner(
     if not metadata.get("keywords") and header_metadata.get("keywords"):
         metadata["keywords"] = header_metadata["keywords"]
 
+    # Only concat when the doc actually has multiple language abstracts; one
+    # block means the choose_abstract_candidate result above is already correct.
     multilingual_abstracts = build_multilingual_abstract_blocks(context)
-    if multilingual_abstracts:
+    if len(multilingual_abstracts) > 1:
         metadata["abstract"] = "\n\n".join(multilingual_abstracts)
 
     targets = keyword_target_languages(metadata.get("keywords") or [], context.lines)
