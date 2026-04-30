@@ -58,13 +58,23 @@ DISCLAIMER_RE = re.compile(
 )
 ABSTRACT_MARKER_RE = re.compile(r"\b(abstract|resumo|resumen)\b", re.IGNORECASE)
 ENGLISH_MARKER_RE = re.compile(r"\babstract\b", re.IGNORECASE)
-# Anchored at line start so prose mentions ("Materials and Methods are described") don't trigger.
+# Trailing (?!\s*:) rejects structured-abstract sub-headings like "Background:" /
+# "Methods:" which are part of the abstract, not the next section.
 NEXT_SECTION_RE = re.compile(
-    r"^\s*(introduction|introduccion|introdução|background|materials?(\s+and\s+methods?)?|methods?|"
-    r"métodos|metodos|metodologia|results?|resultados|discussion|discussão|discusión|"
-    r"conclusion|conclusiones|conclusões|references|referencias|referências|"
-    r"keywords?|palabras\s+clave|palavras-chave|acknowledg|agradec|funding|financiamento|"
-    r"abstract|resumo|resumen)\b",
+    r"^\s*(?:[\dIVXivx]+(?:\.\d+)*[\.\)]?\s+)?"
+    r"(?:introduction|introduccion|introdução|background|"
+    r"materials?(?:\s+and\s+methods?)?|methods?|"
+    r"métodos|metodos|metodologia|"
+    r"results?|resultados|"
+    r"discussion|discussão|discusión|"
+    r"conclusion|conclusiones|conclusões|"
+    r"references|referencias|referências|"
+    r"keywords?|palabras\s+clave|palavras-chave|"
+    r"acknowledg|agradec|funding|financiamento|"
+    r"highlights|significance|"
+    r"author\s+summary|plain\s+language\s+summary|"
+    r"abstract|resumo|resumen)"
+    r"(?!\w)(?!\s*:)",
     re.IGNORECASE,
 )
 PORTUGUESE_MARKER_RE = re.compile(r"\bresumo\b", re.IGNORECASE)
