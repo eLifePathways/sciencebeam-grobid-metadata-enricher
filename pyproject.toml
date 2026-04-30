@@ -32,6 +32,7 @@ bench = [
     "PyYAML>=6",
     "rapidfuzz>=3",
     "pandas>=2.3.3",
+    "psycopg[binary]>=3.1",
 ]
 
 [dependency-groups]

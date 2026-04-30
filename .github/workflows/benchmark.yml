@@ -181,6 +181,48 @@ jobs:
             benchmarks/runs/${{ github.sha }}/*.jsonl
           retention-days: 30
 
+      # PRs from forked repos do not receive secrets, so BENCH_PG_DSN is empty
+      # and the gate skips the rest. Internal pushes/PRs/schedule runs all see
+      # the secret and publish to Postgres.
+      - name: Gate Postgres export
+        id: gate_export
+        env:
+          BENCH_PG_DSN: ${{ secrets.BENCH_PG_DSN }}
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+        run: |
+          if [ -n "${BENCH_PG_DSN:-}" ] && [ -n "${AZURE_CREDENTIALS:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Postgres export skipped (BENCH_PG_DSN or AZURE_CREDENTIALS unset)."
+          fi
+
+      - name: Azure login
+        if: steps.gate_export.outputs.enabled == 'true'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Export run to Postgres
+        if: steps.gate_export.outputs.enabled == 'true'
+        env:
+          BENCH_PG_DSN: ${{ secrets.BENCH_PG_DSN }}
+          AZURE_PG_RG: ${{ vars.AZURE_PG_RG || 'sb-bench-rg' }}
+          AZURE_PG_SERVER: ${{ vars.AZURE_PG_SERVER || 'sb-bench-pg-leon' }}
+        run: |
+          set -euo pipefail
+          RUNNER_IP=$(curl -fsSL https://api.ipify.org)
+          RULE="gha-${{ github.run_id }}"
+          az postgres flexible-server firewall-rule create \
+            -g "$AZURE_PG_RG" --name "$AZURE_PG_SERVER" \
+            --rule-name "$RULE" \
+            --start-ip-address "$RUNNER_IP" --end-ip-address "$RUNNER_IP" \
+            --output none
+          trap 'az postgres flexible-server firewall-rule delete -g "$AZURE_PG_RG" --name "$AZURE_PG_SERVER" --rule-name "$RULE" --yes --output none || true' EXIT
+          uv run python -m benchmarks.export \
+            --run-dir   benchmarks/runs/${{ github.sha }} \
+            --ci-run-id ${{ github.run_id }}
+
       - name: Install CML via npm (avoids setup-cml's unauthenticated release fetch)
         run: npm install -g @dvcorg/cml
       - name: Post PR comment
