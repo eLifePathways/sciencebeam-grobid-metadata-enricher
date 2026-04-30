@@ -253,7 +253,7 @@ def extract_tei_fields(tei_path: Path) -> MetadataRecord:
     # holds cited references). Filter by the type attribute to keep publication
     # IDs (DOI/PMID/PMCID/arXiv/ISSN/ISBN/URL); drop Grobid-internal types like
     # MD5 hashes and grant numbers.
-    _IDNO_KEEP_TYPES = {"doi", "pmid", "pmcid", "arxiv", "issn", "isbn", "url", ""}
+    keep_types = {"doi", "pmid", "pmcid", "arxiv", "issn", "isbn", "url", ""}
     identifiers: List[str] = []
 
     def _walk_for_idno(node: ET.Element) -> None:
@@ -263,7 +263,7 @@ def extract_tei_fields(tei_path: Path) -> MetadataRecord:
                 continue
             if tag == "idno":
                 idno_type = (child.attrib.get("type") or "").lower()
-                if idno_type not in _IDNO_KEEP_TYPES:
+                if idno_type not in keep_types:
                     continue
                 value = collect_text(child)
                 if value:
