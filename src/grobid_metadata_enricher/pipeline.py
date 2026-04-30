@@ -339,17 +339,30 @@ def dedupe_tagged_blocks(blocks: Sequence[Tuple[str, str]]) -> List[Tuple[str, s
 def _block_tokens(text: str) -> set:
     import unicodedata
     nfkd = unicodedata.normalize("NFKD", text or "")
-    return set(re.findall(r"\w+", nfkd.lower()))
+    # Drop pure-numeric tokens — typeset PDFs leak line numbers ("23", "24") into
+    # the OCR copy of the abstract, defeating subset checks against the clean copy.
+    return {t for t in re.findall(r"\w+", nfkd.lower()) if not t.isdigit()}
 
 
-def dedupe_blocks(blocks: Sequence[str]) -> List[str]:
-    # Drop empties, exact duplicates, blocks that are substrings of another, and
-    # blocks whose NFKD-normalised token set is a subset of another (catches
-    # near-duplicates that differ only in ligatures, headings, or whitespace).
+def dedupe_blocks(blocks: Sequence[str], near_subset_ratio: float = 0.9) -> List[str]:
+    # Drop empties, exact duplicates, blocks that are substrings of another,
+    # and blocks whose NFKD-normalised token set is contained (strictly or
+    # near-fully, default >=90%) in another block's tokens. The fuzzy bound
+    # catches OCR copies that share most words with the clean abstract but
+    # have a few unique tokens (heading words, line numbers stripped earlier,
+    # truncations).
     keys = [normalize_whitespace(text).lower() for text in blocks]
     token_sets = [_block_tokens(text) for text in blocks]
     seen: set[str] = set()
     unique: List[str] = []
+
+    def _near_contained(small: set, big: set) -> bool:
+        if not small:
+            return False
+        if len(big) <= len(small):
+            return False
+        return len(small & big) / len(small) >= near_subset_ratio
+
     for i, (text, key) in enumerate(zip(blocks, keys)):
         if not key or key in seen:
             continue
@@ -357,7 +370,7 @@ def dedupe_blocks(blocks: Sequence[str]) -> List[str]:
             continue
         ti = token_sets[i]
         if ti and any(
-            i != j and ti < token_sets[j]
+            i != j and _near_contained(ti, token_sets[j])
             for j in range(len(blocks))
         ):
             continue
