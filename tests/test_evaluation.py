@@ -62,3 +62,58 @@ class TestEvaluateRecordEditSim:
             {"abstract": "the quick brown dog"},
         )
         assert 0.0 < metrics["abstract_edit_sim"] < 1.0
+
+
+class TestF1Metrics:
+    def test_abstract_f1_recall_precision(self) -> None:
+        gold = "short abstract"
+        # pred has all gold tokens (recall=1) plus 5 extra tokens (precision=2/7)
+        pred = "short abstract with a lot of extra"
+        m = evaluate_record({"abstract": pred}, {"abstract": gold})
+        assert m["abstract_recall"] == pytest.approx(1.0)
+        assert m["abstract_precision"] == pytest.approx(2/7)
+        assert m["abstract_f1"] == pytest.approx(2 * 1.0 * (2/7) / (1.0 + 2/7))
+
+    def test_keywords_f1(self) -> None:
+        m = evaluate_record(
+            {"keywords": ["alpha", "beta", "gamma", "delta"]},
+            {"keywords": ["alpha", "beta"]},
+        )
+        # gold=2, pred=4, inter=2 -> rec=1.0, pre=0.5, f1=2/3
+        assert m["keywords_recall"] == pytest.approx(1.0)
+        assert m["keywords_precision"] == pytest.approx(0.5)
+        assert m["keywords_f1"] == pytest.approx(2 * 1.0 * 0.5 / 1.5)
+
+    def test_identifiers_f1_penalises_orcid_dump(self) -> None:
+        m = evaluate_record(
+            {"identifiers": ["10.1234/abc", "0000-0001-2345-6789", "0000-0002-3456-7890"]},
+            {"identifiers": ["10.1234/abc"]},
+        )
+        # gold=1, pred=3, inter=1 -> rec=1.0, pre=1/3, f1=0.5
+        assert m["identifiers_recall"] == pytest.approx(1.0)
+        assert m["identifiers_precision"] == pytest.approx(1/3)
+        assert m["identifiers_f1"] == pytest.approx(0.5)
+
+    def test_empty_pred_yields_zero_precision_and_f1(self) -> None:
+        m = evaluate_record({"keywords": []}, {"keywords": ["alpha"]})
+        assert m["keywords_recall"] == 0.0
+        assert m["keywords_precision"] == 0.0
+        assert m["keywords_f1"] == 0.0
+
+    def test_empty_gold_yields_none(self) -> None:
+        m = evaluate_record({"keywords": ["alpha"]}, {"keywords": []})
+        assert m["keywords_recall"] is None
+        assert m["keywords_precision"] is None
+        assert m["keywords_f1"] is None
+
+    def test_section_head_f1_with_bipartite_matching(self) -> None:
+        # 2 gold heads, 4 pred heads (2 match, 2 are noise/duplicates).
+        # bipartite: each pred used at most once -> matched_gold=2, matched_pred=2
+        # rec = 2/2 = 1.0, pre = 2/4 = 0.5, f1 = 2/3
+        m = evaluate_record(
+            {"body_sections": ["Introduction", "Methods", "Introduction text", "Random"]},
+            {"body_sections": ["Introduction", "Methods"]},
+        )
+        assert m["body_section_recall"] == pytest.approx(1.0)
+        assert m["body_section_precision"] == pytest.approx(0.5)
+        assert m["body_section_f1"] == pytest.approx(2/3)
