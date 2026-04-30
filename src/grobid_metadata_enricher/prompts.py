@@ -10,7 +10,11 @@ TEI_METADATA_PROMPT = (
     "Use only the supplied TEI. "
     "Return JSON with fields: title, authors, affiliations, abstract, keywords, "
     "publisher, date, language, identifiers, relations, rights, types, formats. "
-    "Use empty strings or empty lists when a field is not present."
+    "Use empty strings or empty lists when a field is not present.\n"
+    "The 'identifiers' field is the persistent identifier(s) OF THIS ARTICLE only "
+    "(its DOI, PMID, PMCID, arXiv ID, or article URL). Do NOT include author ORCID "
+    "iDs, reviewer iDs, ISSN of the journal, ISBN of a book, or DOIs of cited "
+    "references — those belong to other entities, not this article."
 )
 
 ABSTRACT_SELECTION_PROMPT = (

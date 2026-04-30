@@ -527,8 +527,18 @@ def choose_abstract_candidate(candidates: Sequence[str], preferred_language: Opt
     return max(available, key=score_abstract_candidate)
 
 
+_ORCID_RE = re.compile(r"^\s*(?:https?://orcid\.org/|orcid[:\s]*)?(\d{4}-\d{4}-\d{4}-\d{3}[\dX])\s*$", re.IGNORECASE)
+
+
+def _looks_like_orcid(value: str) -> bool:
+    return bool(_ORCID_RE.match(value or ""))
+
+
 def add_scielo_identifiers(record_id: str, identifiers: Sequence[str]) -> List[str]:
-    values = [value for value in identifiers if value]
+    # The LLM tends to dump every ID-shaped string from the front page (author
+    # ORCIDs, etc.) into the identifiers list. Drop ORCIDs explicitly — they
+    # identify a person, not the article.
+    values = [value for value in identifiers if value and not _looks_like_orcid(value)]
     match = SCIELO_RECORD_RE.search(record_id)
     if match:
         identifier = match.group(1)
