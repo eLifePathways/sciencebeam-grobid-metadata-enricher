@@ -92,6 +92,10 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
     predicted_title = normalize_text(predicted.get("title", ""))
     gold_titles = gold.get("titles") or [gold.get("title", "")]
     metrics["title_match"] = 1 if any(predicted_title == normalize_text(title) for title in gold_titles if title) else 0
+    metrics["title_edit_sim"] = max(
+        (levenshtein_sim(normalize_text(title), predicted_title) for title in gold_titles if title),
+        default=levenshtein_sim("", predicted_title),
+    )
 
     predicted_authors = predicted.get("authors") or []
     gold_authors = gold.get("authors") or []
@@ -124,6 +128,9 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
         metrics["keywords_recall"] = keyword_recall(gold.get("keywords") or [], predicted_keywords)
 
     metrics["publisher_match"] = scalar_match(gold.get("publisher", ""), predicted.get("publisher", ""))
+    gold_publisher = normalize_text(gold.get("publisher", ""))
+    if gold_publisher:
+        metrics["publisher_edit_sim"] = levenshtein_sim(gold_publisher, normalize_text(predicted.get("publisher", "")))
     metrics["date_match"] = scalar_match(gold.get("date", ""), predicted.get("date", ""))
     metrics["language_match"] = language_match(gold.get("language", ""), predicted.get("language", ""))
     metrics["rights_match"] = scalar_match(gold.get("rights", ""), predicted.get("rights", ""))
@@ -353,10 +360,13 @@ def write_root_cause_report(
     lines.append("")
     metric_order = [
         "title_match",
+        "title_edit_sim",
         "authors_recall",
         "abstract_recall",
+        "abstract_edit_sim",
         "keywords_recall",
         "publisher_match",
+        "publisher_edit_sim",
         "date_match",
         "language_match",
         "identifiers_recall",
