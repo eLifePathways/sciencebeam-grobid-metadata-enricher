@@ -249,12 +249,37 @@ def extract_tei_fields(tei_path: Path) -> MetadataRecord:
             if term:
                 keywords.append(term)
 
+    # Collect <idno> only from the article's own header (skip <listBibl>, which
+    # holds cited references). Filter by the type attribute to keep publication
+    # IDs (DOI/PMID/PMCID/arXiv/ISSN/ISBN/URL); drop Grobid-internal types like
+    # MD5 hashes and grant numbers.
+    _IDNO_KEEP_TYPES = {"doi", "pmid", "pmcid", "arxiv", "issn", "isbn", "url", ""}
     identifiers: List[str] = []
+
+    def _walk_for_idno(node: ET.Element) -> None:
+        for child in list(node):
+            tag = strip_ns(child.tag)
+            if tag == "listBibl":
+                continue
+            if tag == "idno":
+                idno_type = (child.attrib.get("type") or "").lower()
+                if idno_type not in _IDNO_KEEP_TYPES:
+                    continue
+                value = collect_text(child)
+                if value:
+                    identifiers.append(value)
+            else:
+                _walk_for_idno(child)
+
+    file_desc = None
     for element in root.iter():
-        if strip_ns(element.tag) == "idno":
-            identifier = collect_text(element)
-            if identifier:
-                identifiers.append(identifier)
+        if strip_ns(element.tag) == "fileDesc":
+            file_desc = element
+            break
+    if file_desc is not None:
+        _walk_for_idno(file_desc)
+    else:
+        _walk_for_idno(root)
 
     language = ""
     for element in root.iter():
