@@ -281,11 +281,16 @@ def dedupe_tagged_blocks(blocks: Sequence[Tuple[str, str]]) -> List[Tuple[str, s
 
 
 def dedupe_blocks(blocks: Sequence[str]) -> List[str]:
-    seen = set()
+    # Drop empty blocks, exact duplicates, and any block whose normalised text
+    # is already contained in a longer block (e.g. a clean TEI abstract that
+    # also appears as a prefix of a noisy OCR marker-window block).
+    keys = [normalize_whitespace(text).lower() for text in blocks]
+    seen: set[str] = set()
     unique: List[str] = []
-    for text in blocks:
-        key = normalize_whitespace(text).lower()
+    for text, key in zip(blocks, keys):
         if not key or key in seen:
+            continue
+        if any(key != other and key in other for other in keys):
             continue
         seen.add(key)
         unique.append(text)
@@ -1088,8 +1093,13 @@ def _build_prediction_inner(
     if not metadata.get("keywords") and header_metadata.get("keywords"):
         metadata["keywords"] = header_metadata["keywords"]
 
+    # Stage 1 (above) chose the single best abstract from labelled candidates.
+    # The multilingual concat path is only useful when the document genuinely
+    # ships multiple language versions of the abstract; for monolingual papers
+    # the OCR marker-window block can otherwise duplicate the TEI abstract and
+    # bleed into the introduction.
     multilingual_abstracts = build_multilingual_abstract_blocks(context)
-    if multilingual_abstracts:
+    if len(multilingual_abstracts) > 1:
         metadata["abstract"] = "\n\n".join(multilingual_abstracts)
 
     targets = keyword_target_languages(metadata.get("keywords") or [], context.lines)
