@@ -94,7 +94,7 @@
       "targets": [
         {
           "format": "table",
-          "rawSql": "SELECT m.corpus, m.metric, m.system, ROUND(m.mean::numeric, 4) AS current, ROUND(b.mean::numeric, 4) AS baseline, ROUND((m.mean - b.mean)::numeric, 4) AS delta FROM bench_metric m JOIN bench_metric b USING (parser, corpus, metric, system) WHERE m.run_sha='${current_sha}' AND b.run_sha='${baseline_sha}' AND m.parser='${parser}' AND m.corpus LIKE '${corpus}' ORDER BY m.corpus, m.metric, m.system"
+          "rawSql": "SELECT m.corpus, m.metric, m.system, ROUND(m.mean::numeric, 4) AS current, ROUND(b.mean::numeric, 4) AS baseline, ROUND((m.mean - b.mean)::numeric, 4) AS delta FROM bench_metric m JOIN bench_metric b USING (parser, corpus, metric, system) WHERE m.run_sha='${current_sha}' AND b.run_sha='${baseline_sha}' AND m.parser='${parser}' AND m.corpus LIKE '${corpus}' AND m.mean IS DISTINCT FROM b.mean ORDER BY abs(coalesce(m.mean - b.mean, 0)) DESC, m.corpus, m.metric, m.system"
         }
       ],
       "fieldConfig": {
