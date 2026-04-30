@@ -37,12 +37,17 @@ az grafana data-source delete -n "$WORKSPACE" --data-source sciencebeam-bench --
 az grafana data-source create -n "$WORKSPACE" --definition @- <<JSON >/dev/null
 {
   "name": "sciencebeam-bench",
-  "type": "postgres",
+  "type": "grafana-postgresql-datasource",
   "url": "${PG_SERVER}.postgres.database.azure.com:5432",
-  "database": "${PG_DB}",
   "user": "${PG_USER}",
   "access": "proxy",
-  "jsonData": { "sslmode": "require", "postgresVersion": 1600, "timescaledb": false },
+  "isDefault": true,
+  "jsonData": {
+    "database": "${PG_DB}",
+    "sslmode": "require",
+    "postgresVersion": 1600,
+    "timescaledb": false
+  },
   "secureJsonData": { "password": "${PG_PW}" }
 }
 JSON
