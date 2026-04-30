@@ -58,7 +58,6 @@ metrics:
   - abstract_recall
   - abstract_edit_sim
   - keywords_recall
-  - publisher_edit_sim
   - language_match
   - identifiers_recall
   # Gated on the corresponding gold keys; silent for biorxiv / scielo_preprints.

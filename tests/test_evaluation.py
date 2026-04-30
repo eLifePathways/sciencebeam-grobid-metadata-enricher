@@ -97,34 +97,3 @@ class TestTitleEditSim:
     def test_empty_gold(self) -> None:
         metrics = evaluate_record({"title": "Some Title"}, {"title": ""})
         assert metrics["title_edit_sim"] == pytest.approx(0.0)
-
-
-class TestPublisherEditSim:
-    def test_exact_match(self) -> None:
-        metrics = evaluate_record({"publisher": "Springer"}, {"publisher": "Springer"})
-        assert metrics["publisher_edit_sim"] == pytest.approx(1.0)
-
-    def test_case_insensitive(self) -> None:
-        metrics = evaluate_record({"publisher": "springer"}, {"publisher": "Springer"})
-        assert metrics["publisher_edit_sim"] == pytest.approx(1.0)
-
-    def test_partial_match_between_zero_and_one(self) -> None:
-        metrics = evaluate_record(
-            {"publisher": "Springer Nature"},
-            {"publisher": "Springer"},
-        )
-        assert 0.0 < metrics["publisher_edit_sim"] < 1.0
-
-    def test_empty_predicted(self) -> None:
-        metrics = evaluate_record({"publisher": ""}, {"publisher": "Springer"})
-        assert metrics["publisher_edit_sim"] == pytest.approx(0.0)
-
-    def test_absent_when_gold_empty(self) -> None:
-        metrics = evaluate_record({"publisher": "Springer"}, {"publisher": ""})
-        assert "publisher_edit_sim" not in metrics
-
-    def test_penalises_extra_text(self) -> None:
-        gold = "Elsevier"
-        predicted = "Elsevier Science and Technology Publishing Group"
-        metrics = evaluate_record({"publisher": predicted}, {"publisher": gold})
-        assert metrics["publisher_edit_sim"] < 1.0

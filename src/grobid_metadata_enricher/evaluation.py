@@ -128,9 +128,6 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
         metrics["keywords_recall"] = keyword_recall(gold.get("keywords") or [], predicted_keywords)
 
     metrics["publisher_match"] = scalar_match(gold.get("publisher", ""), predicted.get("publisher", ""))
-    gold_publisher = normalize_text(gold.get("publisher", ""))
-    if gold_publisher:
-        metrics["publisher_edit_sim"] = levenshtein_sim(gold_publisher, normalize_text(predicted.get("publisher", "")))
     metrics["date_match"] = scalar_match(gold.get("date", ""), predicted.get("date", ""))
     metrics["language_match"] = language_match(gold.get("language", ""), predicted.get("language", ""))
     metrics["rights_match"] = scalar_match(gold.get("rights", ""), predicted.get("rights", ""))
@@ -366,7 +363,6 @@ def write_root_cause_report(
         "abstract_edit_sim",
         "keywords_recall",
         "publisher_match",
-        "publisher_edit_sim",
         "date_match",
         "language_match",
         "identifiers_recall",
