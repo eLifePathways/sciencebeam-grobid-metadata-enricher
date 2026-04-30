@@ -57,6 +57,14 @@ DISCLAIMER_RE = re.compile(
     re.IGNORECASE,
 )
 ABSTRACT_MARKER_RE = re.compile(r"\b(abstract|resumo|resumen)\b", re.IGNORECASE)
+# A line that LOOKS like a section heading "Abstract" / "Resumo" / "Resumen",
+# possibly with a section number prefix or trailing punctuation. Lines longer
+# than ~60 chars are paragraph text, not headings (filters out reference list
+# entries containing "v1.abstract" or "Abstract 5463: …").
+ABSTRACT_HEADING_RE = re.compile(
+    r"^\s*(?:[\dIVXivx]+(?:\.\d+)*[\.\)]?\s+)?(abstract|resumo|resumen)\s*[\.:]?\s*$",
+    re.IGNORECASE,
+)
 ENGLISH_MARKER_RE = re.compile(r"\babstract\b", re.IGNORECASE)
 # Trailing (?!\s*:) rejects structured-abstract sub-headings like "Background:" /
 # "Methods:" which are part of the abstract, not the next section.
@@ -273,7 +281,31 @@ def marker_windows(
     suffix_lines: int,
     fallback_lines: int,
 ) -> List[str]:
-    indices = [index for index, line in enumerate(lines) if ABSTRACT_MARKER_RE.search(line.get("text", ""))]
+    # Restrict marker search to the first two pages — abstracts live there,
+    # and reference-list URLs on later pages routinely contain "abstract".
+    front_pages = {0, 1}
+
+    def _on_front(line: LayoutLine) -> bool:
+        return line.get("page", 0) in front_pages
+
+    indices = [
+        index for index, line in enumerate(lines)
+        if _on_front(line)
+        and ABSTRACT_HEADING_RE.match((line.get("text", "") or "").strip()[:80])
+    ]
+    if not indices:
+        # OCR-mash fallback: line on the first two pages STARTING with the
+        # keyword (after optional section number), so a URL like
+        # "v1.abstract" embedded mid-line cannot match.
+        indices = [
+            index for index, line in enumerate(lines)
+            if _on_front(line)
+            and re.match(
+                r"^\s*(?:[\dIVXivx]+(?:\.\d+)*[\.\)]?\s+)?(abstract|resumo|resumen)\b",
+                line.get("text", "") or "",
+                re.IGNORECASE,
+            )
+        ]
     blocks: List[str] = []
     if indices:
         for index in indices[:max_blocks]:
@@ -304,15 +336,30 @@ def dedupe_tagged_blocks(blocks: Sequence[Tuple[str, str]]) -> List[Tuple[str, s
     return unique
 
 
+def _block_tokens(text: str) -> set:
+    import unicodedata
+    nfkd = unicodedata.normalize("NFKD", text or "")
+    return set(re.findall(r"\w+", nfkd.lower()))
+
+
 def dedupe_blocks(blocks: Sequence[str]) -> List[str]:
-    # Drop empties, exact duplicates, and any block strictly contained in another.
+    # Drop empties, exact duplicates, blocks that are substrings of another, and
+    # blocks whose NFKD-normalised token set is a subset of another (catches
+    # near-duplicates that differ only in ligatures, headings, or whitespace).
     keys = [normalize_whitespace(text).lower() for text in blocks]
+    token_sets = [_block_tokens(text) for text in blocks]
     seen: set[str] = set()
     unique: List[str] = []
-    for text, key in zip(blocks, keys):
+    for i, (text, key) in enumerate(zip(blocks, keys)):
         if not key or key in seen:
             continue
         if any(key != other and key in other for other in keys):
+            continue
+        ti = token_sets[i]
+        if ti and any(
+            i != j and ti < token_sets[j]
+            for j in range(len(blocks))
+        ):
             continue
         seen.add(key)
         unique.append(text)
