@@ -72,6 +72,40 @@ class TestMarkerWindowsTailStop:
         assert "este artigo" in pt and "this article" not in pt
         assert "this article" in en and "body bleed" not in en
 
+    def test_stops_at_numbered_introduction(self) -> None:
+        lines = [_line("Abstract"), _line("body sentence."), _line("1. Introduction"), _line("body bleed.")]
+        blocks = marker_windows(
+            lines, max_blocks=4, prefix_lines=0, suffix_lines=18, fallback_lines=160
+        )
+        assert "body sentence" in blocks[0].lower()
+        assert "body bleed" not in blocks[0].lower()
+
+    def test_stops_at_biorxiv_significance(self) -> None:
+        lines = [_line("Abstract"), _line("body sentence."), _line("Significance"), _line("biorxiv body.")]
+        blocks = marker_windows(
+            lines, max_blocks=4, prefix_lines=0, suffix_lines=18, fallback_lines=160
+        )
+        assert "body sentence" in blocks[0].lower()
+        assert "biorxiv body" not in blocks[0].lower()
+
+    def test_does_not_stop_at_structured_abstract_subheading(self) -> None:
+        lines = [
+            _line("Abstract"),
+            _line("Background: Despite the importance."),
+            _line("Methods: We did this."),
+            _line("Results: We found that."),
+            _line("Introduction"),
+            _line("body bleed."),
+        ]
+        blocks = marker_windows(
+            lines, max_blocks=4, prefix_lines=0, suffix_lines=18, fallback_lines=160
+        )
+        text = blocks[0].lower()
+        assert "background:" in text
+        assert "methods:" in text
+        assert "results:" in text
+        assert "body bleed" not in text
+
     def test_no_section_marker_falls_back_to_suffix_cap(self) -> None:
         lines = [_line("Abstract")] + [_line(f"line {i}") for i in range(20)]
         blocks = marker_windows(
