@@ -102,17 +102,18 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
         metrics["authors_recall"] = 1.0
 
     predicted_abstract = predicted.get("abstract", "")
-    gold_abstracts = gold.get("abstracts") or [gold.get("abstract", "")]
-    metrics["abstract_recall"] = (
-        max(jaccard_recall(abstract, predicted_abstract) for abstract in gold_abstracts)
-        if gold_abstracts
-        else jaccard_recall(gold.get("abstract", ""), predicted_abstract)
-    )
-    metrics["abstract_edit_sim"] = (
-        max(levenshtein_sim(abstract, predicted_abstract) for abstract in gold_abstracts)
-        if gold_abstracts
-        else levenshtein_sim(gold.get("abstract", ""), predicted_abstract)
-    )
+    gold_abstracts = [a for a in (gold.get("abstracts") or [gold.get("abstract", "")]) if a]
+    if gold_abstracts:
+        metrics["abstract_recall"] = max(
+            jaccard_recall(abstract, predicted_abstract) for abstract in gold_abstracts
+        )
+        metrics["abstract_edit_sim"] = max(
+            levenshtein_sim(abstract, predicted_abstract) for abstract in gold_abstracts
+        )
+    else:
+        # Empty gold: abstain. Otherwise sim=1.0 rewards an empty pred and sim=0.0 penalises a correct one.
+        metrics["abstract_recall"] = None
+        metrics["abstract_edit_sim"] = None
 
     predicted_keywords = predicted.get("keywords") or []
     gold_keyword_groups = gold.get("keywords_groups") or {}

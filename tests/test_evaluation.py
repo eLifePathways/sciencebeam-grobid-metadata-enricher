@@ -62,3 +62,17 @@ class TestEvaluateRecordEditSim:
             {"abstract": "the quick brown dog"},
         )
         assert 0.0 < metrics["abstract_edit_sim"] < 1.0
+
+    def test_empty_gold_returns_none_for_both(self) -> None:
+        m = evaluate_record({"abstract": "extracted from PDF"}, {"abstract": ""})
+        assert m["abstract_edit_sim"] is None
+        assert m["abstract_recall"] is None
+
+        m = evaluate_record({"abstract": ""}, {"abstract": ""})
+        assert m["abstract_edit_sim"] is None
+        assert m["abstract_recall"] is None
+
+    def test_empty_abstracts_list_returns_none(self) -> None:
+        m = evaluate_record({"abstract": "extracted content"}, {"abstracts": ["", None]})
+        assert m["abstract_edit_sim"] is None
+        assert m["abstract_recall"] is None
