@@ -37,63 +37,64 @@ class TestLevenshteinSim:
         assert sim < 1.0
 
 
-class TestEvaluateRecordEditSim:
-    def test_exact_match(self) -> None:
-        metrics = evaluate_record({"abstract": "hello world"}, {"abstract": "hello world"})
-        assert metrics["abstract_edit_sim"] == pytest.approx(1.0)
+class TestEvaluateRecord:
+    class TestAbstractEditSim:
+        def test_exact_match(self) -> None:
+            metrics = evaluate_record({"abstract": "hello world"}, {"abstract": "hello world"})
+            assert metrics["abstract_edit_sim"] == pytest.approx(1.0)
 
-    def test_penalises_extra_text(self) -> None:
-        gold = "short abstract"
-        predicted = "short abstract with a lot of extra words appended"
-        metrics = evaluate_record({"abstract": predicted}, {"abstract": gold})
-        assert metrics["abstract_edit_sim"] < 1.0
-        # abstract_recall (jaccard recall) scores 1.0 for the same input — showing the difference
-        assert metrics["abstract_recall"] == pytest.approx(1.0)
+        def test_penalises_extra_text(self) -> None:
+            gold = "short abstract"
+            predicted = "short abstract with a lot of extra words appended"
+            metrics = evaluate_record({"abstract": predicted}, {"abstract": gold})
+            assert metrics["abstract_edit_sim"] < 1.0
+            # abstract_recall (jaccard recall) scores 1.0 for the same input — showing the difference
+            assert metrics["abstract_recall"] == pytest.approx(1.0)
 
-    def test_multi_candidate_takes_max(self) -> None:
-        predicted = "the correct abstract text"
-        gold = {"abstracts": ["a completely different abstract", "the correct abstract text"]}
-        metrics = evaluate_record({"abstract": predicted}, gold)
-        assert metrics["abstract_edit_sim"] == pytest.approx(1.0)
+        def test_multi_candidate_takes_max(self) -> None:
+            predicted = "the correct abstract text"
+            gold = {"abstracts": ["a completely different abstract", "the correct abstract text"]}
+            metrics = evaluate_record({"abstract": predicted}, gold)
+            assert metrics["abstract_edit_sim"] == pytest.approx(1.0)
 
-    def test_partial_match_between_zero_and_one(self) -> None:
-        metrics = evaluate_record(
-            {"abstract": "the quick brown fox"},
-            {"abstract": "the quick brown dog"},
-        )
-        assert 0.0 < metrics["abstract_edit_sim"] < 1.0
+        def test_partial_match_between_zero_and_one(self) -> None:
+            metrics = evaluate_record(
+                {"abstract": "the quick brown fox"},
+                {"abstract": "the quick brown dog"},
+            )
+            assert 0.0 < metrics["abstract_edit_sim"] < 1.0
 
 
-class TestTitleEditSim:
-    def test_exact_match(self) -> None:
-        metrics = evaluate_record({"title": "A Great Paper"}, {"title": "A Great Paper"})
-        assert metrics["title_edit_sim"] == pytest.approx(1.0)
+    class TestTitleEditSim:
+        def test_exact_match(self) -> None:
+            metrics = evaluate_record({"title": "A Great Paper"}, {"title": "A Great Paper"})
+            assert metrics["title_edit_sim"] == pytest.approx(1.0)
 
-    def test_penalises_extra_text(self) -> None:
-        gold = "A Great Paper"
-        predicted = "A Great Paper: with subtitle and extra disclaimer text appended"
-        metrics = evaluate_record({"title": predicted}, {"title": gold})
-        assert metrics["title_edit_sim"] < 1.0
-        # title_match is binary and also 0 here
-        assert metrics["title_match"] == 0
+        def test_penalises_extra_text(self) -> None:
+            gold = "A Great Paper"
+            predicted = "A Great Paper: with subtitle and extra disclaimer text appended"
+            metrics = evaluate_record({"title": predicted}, {"title": gold})
+            assert metrics["title_edit_sim"] < 1.0
+            # title_match is binary and also 0 here
+            assert metrics["title_match"] == 0
 
-    def test_multi_candidate_takes_max(self) -> None:
-        predicted = "the correct title"
-        gold = {"titles": ["a completely different title", "the correct title"]}
-        metrics = evaluate_record({"title": predicted}, gold)
-        assert metrics["title_edit_sim"] == pytest.approx(1.0)
+        def test_multi_candidate_takes_max(self) -> None:
+            predicted = "the correct title"
+            gold = {"titles": ["a completely different title", "the correct title"]}
+            metrics = evaluate_record({"title": predicted}, gold)
+            assert metrics["title_edit_sim"] == pytest.approx(1.0)
 
-    def test_partial_match_between_zero_and_one(self) -> None:
-        metrics = evaluate_record(
-            {"title": "Deep Learning for NLP"},
-            {"title": "Deep Learning for CV"},
-        )
-        assert 0.0 < metrics["title_edit_sim"] < 1.0
+        def test_partial_match_between_zero_and_one(self) -> None:
+            metrics = evaluate_record(
+                {"title": "Deep Learning for NLP"},
+                {"title": "Deep Learning for CV"},
+            )
+            assert 0.0 < metrics["title_edit_sim"] < 1.0
 
-    def test_empty_predicted(self) -> None:
-        metrics = evaluate_record({"title": ""}, {"title": "Some Title"})
-        assert metrics["title_edit_sim"] == pytest.approx(0.0)
+        def test_empty_predicted(self) -> None:
+            metrics = evaluate_record({"title": ""}, {"title": "Some Title"})
+            assert metrics["title_edit_sim"] == pytest.approx(0.0)
 
-    def test_empty_gold(self) -> None:
-        metrics = evaluate_record({"title": "Some Title"}, {"title": ""})
-        assert metrics["title_edit_sim"] == pytest.approx(0.0)
+        def test_empty_gold(self) -> None:
+            metrics = evaluate_record({"title": "Some Title"}, {"title": ""})
+            assert metrics["title_edit_sim"] == pytest.approx(0.0)
