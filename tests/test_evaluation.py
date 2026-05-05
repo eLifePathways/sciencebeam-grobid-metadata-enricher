@@ -50,25 +50,30 @@ class TestGetMaxLevenshteinSim:
 
 
 class TestEvaluateRecord:
-    @pytest.mark.parametrize("field,list_key", [("abstract", "abstracts"), ("title", "titles")])
-    def test_edit_sim_exact_match(self, field: str, _list_key: str) -> None:
-        metrics = evaluate_record({field: "exact text"}, {field: "exact text"})
-        assert metrics[f"{field}_edit_sim"] == pytest.approx(1.0)
+    @pytest.mark.parametrize("params", [
+        pytest.param({"field": "abstract", "list_key": "abstracts"}, id="abstract"),
+        pytest.param({"field": "title", "list_key": "titles"}, id="title"),
+    ])
+    class TestCommonEditSim:
+        def test_edit_sim_exact_match(self, params: dict) -> None:
+            field = params["field"]
+            metrics = evaluate_record({field: "exact text"}, {field: "exact text"})
+            assert metrics[f"{field}_edit_sim"] == pytest.approx(1.0)
 
-    @pytest.mark.parametrize("field,list_key", [("abstract", "abstracts"), ("title", "titles")])
-    def test_edit_sim_partial_match_between_zero_and_one(self, field: str, _list_key: str) -> None:
-        metrics = evaluate_record(
-            {field: "the quick brown fox"},
-            {field: "the quick brown dog"},
-        )
-        assert 0.0 < metrics[f"{field}_edit_sim"] < 1.0
+        def test_edit_sim_partial_match_between_zero_and_one(self, params: dict) -> None:
+            field = params["field"]
+            metrics = evaluate_record(
+                {field: "the quick brown fox"},
+                {field: "the quick brown dog"},
+            )
+            assert 0.0 < metrics[f"{field}_edit_sim"] < 1.0
 
-    @pytest.mark.parametrize("field,list_key", [("abstract", "abstracts"), ("title", "titles")])
-    def test_edit_sim_multi_candidate_takes_max(self, field: str, list_key: str) -> None:
-        predicted = "the correct text"
-        golds = ["a completely different text", "the correct text"]
-        metrics = evaluate_record({field: predicted}, {list_key: golds})
-        assert metrics[f"{field}_edit_sim"] == pytest.approx(get_max_levenshtein_sim(predicted, golds))
+        def test_edit_sim_multi_candidate_takes_max(self, params: dict) -> None:
+            field, list_key = params["field"], params["list_key"]
+            predicted = "the correct text"
+            golds = ["a completely different text", "the correct text"]
+            metrics = evaluate_record({field: predicted}, {list_key: golds})
+            assert metrics[f"{field}_edit_sim"] == pytest.approx(get_max_levenshtein_sim(predicted, golds))
 
     class TestAbstractEditSim:
         def test_penalises_extra_text(self) -> None:
