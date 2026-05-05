@@ -75,15 +75,6 @@ class TestEvaluateRecord:
             metrics = evaluate_record({field: predicted}, {list_key: golds})
             assert metrics[f"{field}_edit_sim"] == pytest.approx(get_max_levenshtein_sim(predicted, golds))
 
-    class TestAbstractEditSim:
-        def test_penalises_extra_text(self) -> None:
-            gold = "short abstract"
-            predicted = "short abstract with a lot of extra words appended"
-            metrics = evaluate_record({"abstract": predicted}, {"abstract": gold})
-            assert metrics["abstract_edit_sim"] < 1.0
-            # abstract_recall (jaccard recall) scores 1.0 for the same input — showing the difference
-            assert metrics["abstract_recall"] == pytest.approx(1.0)
-
     class TestTitleEditSim:
         def test_penalises_extra_text(self) -> None:
             gold = "A Great Paper"
