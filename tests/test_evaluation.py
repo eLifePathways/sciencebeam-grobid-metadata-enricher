@@ -5,6 +5,7 @@ import pytest
 from grobid_metadata_enricher.evaluation import (
     evaluate_record,
     get_max_levenshtein_sim,
+    jaccard_f1,
     levenshtein_sim,
     normalize_text,
 )
@@ -54,6 +55,30 @@ class TestGetMaxLevenshteinSim:
         assert result > worse
 
 
+class TestJaccardF1:
+    def test_identical(self) -> None:
+        assert jaccard_f1("the quick brown fox", "the quick brown fox") == pytest.approx(1.0)
+
+    def test_no_overlap(self) -> None:
+        assert jaccard_f1("alpha beta", "gamma delta") == pytest.approx(0.0)
+
+    def test_empty_gold_returns_one(self) -> None:
+        assert jaccard_f1("", "some text") == pytest.approx(1.0)
+
+    def test_empty_predicted_returns_zero(self) -> None:
+        assert jaccard_f1("some text", "") == pytest.approx(0.0)
+
+    def test_partial_overlap_between_zero_and_one(self) -> None:
+        result = jaccard_f1("the quick brown fox", "the quick brown dog")
+        assert 0.0 < result < 1.0
+
+    def test_extra_predicted_words_penalised_versus_recall(self) -> None:
+        gold = "short abstract"
+        predicted = "short abstract with many extra words"
+        from grobid_metadata_enricher.evaluation import jaccard_recall
+        assert jaccard_f1(gold, predicted) < jaccard_recall(gold, predicted)
+
+
 class TestEvaluateRecord:
     @pytest.mark.parametrize(
         "params",
@@ -82,6 +107,29 @@ class TestEvaluateRecord:
             golds = ["a completely different text", "the correct text"]
             metrics = evaluate_record({field: predicted}, {list_key: golds})
             assert metrics[f"{field}_edit_sim"] == pytest.approx(get_max_levenshtein_sim(predicted, golds))
+
+    class TestAbstractF1:
+        def test_exact_match(self) -> None:
+            metrics = evaluate_record({"abstract": "hello world"}, {"abstract": "hello world"})
+            assert metrics["abstract_f1"] == pytest.approx(1.0)
+
+        def test_empty_gold_returns_one(self) -> None:
+            metrics = evaluate_record({"abstract": "some text"}, {"abstract": ""})
+            assert metrics["abstract_f1"] == pytest.approx(1.0)
+
+        def test_partial_match_between_zero_and_one(self) -> None:
+            metrics = evaluate_record(
+                {"abstract": "the quick brown fox"},
+                {"abstract": "the quick brown dog"},
+            )
+            assert 0.0 < metrics["abstract_f1"] < 1.0
+
+        def test_extra_words_penalise_f1_vs_recall(self) -> None:
+            metrics = evaluate_record(
+                {"abstract": "short abstract with many extra words appended"},
+                {"abstract": "short abstract"},
+            )
+            assert metrics["abstract_f1"] < metrics["abstract_recall"]
 
     class TestTitleEditSim:
         def test_should_normalize_text(self) -> None:

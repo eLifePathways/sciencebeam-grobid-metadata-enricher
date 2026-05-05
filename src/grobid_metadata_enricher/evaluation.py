@@ -44,6 +44,17 @@ def jaccard_recall(gold: str, predicted: str) -> float:
     return len(gold_tokens & predicted_tokens) / max(1, len(gold_tokens))
 
 
+def jaccard_f1(gold: str, predicted: str) -> float:
+    gold_tokens = set(normalize_tokens(gold))
+    predicted_tokens = set(normalize_tokens(predicted))
+    if not gold_tokens:
+        return 1.0
+    if not predicted_tokens:
+        return 0.0
+    intersection = len(gold_tokens & predicted_tokens)
+    return 2 * intersection / (len(gold_tokens) + len(predicted_tokens))
+
+
 def keyword_recall(gold: List[str], predicted: List[str]) -> float:
     gold_values = {normalize_text(value) for value in gold if normalize_text(value)}
     predicted_values = {normalize_text(value) for value in predicted if normalize_text(value)}
@@ -118,6 +129,9 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
     )
     metrics["abstract_edit_sim"] = (
         get_max_levenshtein_sim(predicted=predicted_abstract, golds=gold_abstracts)
+    )
+    metrics["abstract_f1"] = (
+        max(jaccard_f1(abstract, predicted_abstract) for abstract in gold_abstracts)
     )
 
     predicted_keywords = predicted.get("keywords") or []
@@ -362,6 +376,7 @@ def write_root_cause_report(
         "title_edit_sim",
         "authors_recall",
         "abstract_recall",
+        "abstract_f1",
         "abstract_edit_sim",
         "keywords_recall",
         "publisher_match",

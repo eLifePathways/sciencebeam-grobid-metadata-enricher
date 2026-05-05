@@ -193,6 +193,7 @@ _METRIC_TO_TOKEN_GROUP: Dict[str, str] = {
     "title_edit_sim": "header",
     "authors_recall": "header",
     "abstract_recall": "abstract",
+    "abstract_f1": "abstract",
     "abstract_edit_sim": "abstract",
     "keywords_recall": "keywords",
     "identifiers_recall": "header",
