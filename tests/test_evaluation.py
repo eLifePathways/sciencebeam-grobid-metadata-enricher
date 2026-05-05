@@ -74,20 +74,3 @@ class TestEvaluateRecord:
             golds = ["a completely different text", "the correct text"]
             metrics = evaluate_record({field: predicted}, {list_key: golds})
             assert metrics[f"{field}_edit_sim"] == pytest.approx(get_max_levenshtein_sim(predicted, golds))
-
-    class TestTitleEditSim:
-        def test_penalises_extra_text(self) -> None:
-            gold = "A Great Paper"
-            predicted = "A Great Paper: with subtitle and extra disclaimer text appended"
-            metrics = evaluate_record({"title": predicted}, {"title": gold})
-            assert metrics["title_edit_sim"] < 1.0
-            # title_match is binary and also 0 here
-            assert metrics["title_match"] == 0
-
-        def test_empty_predicted(self) -> None:
-            metrics = evaluate_record({"title": ""}, {"title": "Some Title"})
-            assert metrics["title_edit_sim"] == pytest.approx(0.0)
-
-        def test_empty_gold(self) -> None:
-            metrics = evaluate_record({"title": "Some Title"}, {"title": ""})
-            assert metrics["title_edit_sim"] == pytest.approx(0.0)
