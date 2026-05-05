@@ -91,10 +91,10 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
 
     predicted_title = normalize_text(predicted.get("title", ""))
     gold_titles = gold.get("titles") or [gold.get("title", "")]
+    assert gold_titles
     metrics["title_match"] = 1 if any(predicted_title == normalize_text(title) for title in gold_titles if title) else 0
-    metrics["title_edit_sim"] = max(
-        (levenshtein_sim(normalize_text(title), predicted_title) for title in gold_titles if title),
-        default=levenshtein_sim("", predicted_title),
+    metrics["title_edit_sim"] = (
+        max(levenshtein_sim(normalize_text(title), predicted_title) for title in gold_titles)
     )
 
     predicted_authors = predicted.get("authors") or []
