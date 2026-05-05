@@ -53,6 +53,7 @@ seeds:
 
 metrics:
   - title_match
+  - title_edit_sim
   - authors_recall
   - abstract_recall
   - abstract_edit_sim

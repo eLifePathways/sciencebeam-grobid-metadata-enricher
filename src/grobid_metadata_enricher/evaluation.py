@@ -75,6 +75,10 @@ def levenshtein_sim(a: str, b: str) -> float:
     return _Levenshtein.normalized_similarity(a or "", b or "")
 
 
+def get_max_levenshtein_sim(predicted: str, golds: List[str]) -> float:
+    return max(levenshtein_sim(predicted, gold) for gold in golds)
+
+
 def language_match(gold: str, predicted: str) -> Optional[int]:
     if not gold:
         return None
@@ -91,7 +95,12 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
 
     predicted_title = normalize_text(predicted.get("title", ""))
     gold_titles = gold.get("titles") or [gold.get("title", "")]
-    metrics["title_match"] = 1 if any(predicted_title == normalize_text(title) for title in gold_titles if title) else 0
+    assert gold_titles
+    normalized_gold_titles = [normalize_text(gold_title) for gold_title in gold_titles]
+    metrics["title_match"] = 1 if any(predicted_title == title for title in normalized_gold_titles if title) else 0
+    metrics["title_edit_sim"] = (
+        get_max_levenshtein_sim(predicted=predicted_title, golds=normalized_gold_titles)
+    )
 
     predicted_authors = predicted.get("authors") or []
     gold_authors = gold.get("authors") or []
@@ -103,15 +112,12 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
 
     predicted_abstract = predicted.get("abstract", "")
     gold_abstracts = gold.get("abstracts") or [gold.get("abstract", "")]
+    assert gold_abstracts
     metrics["abstract_recall"] = (
         max(jaccard_recall(abstract, predicted_abstract) for abstract in gold_abstracts)
-        if gold_abstracts
-        else jaccard_recall(gold.get("abstract", ""), predicted_abstract)
     )
     metrics["abstract_edit_sim"] = (
-        max(levenshtein_sim(abstract, predicted_abstract) for abstract in gold_abstracts)
-        if gold_abstracts
-        else levenshtein_sim(gold.get("abstract", ""), predicted_abstract)
+        get_max_levenshtein_sim(predicted=predicted_abstract, golds=gold_abstracts)
     )
 
     predicted_keywords = predicted.get("keywords") or []
@@ -353,8 +359,10 @@ def write_root_cause_report(
     lines.append("")
     metric_order = [
         "title_match",
+        "title_edit_sim",
         "authors_recall",
         "abstract_recall",
+        "abstract_edit_sim",
         "keywords_recall",
         "publisher_match",
         "date_match",

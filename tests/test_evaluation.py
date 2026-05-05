@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from grobid_metadata_enricher.evaluation import evaluate_record, levenshtein_sim
+from grobid_metadata_enricher.evaluation import (
+    evaluate_record,
+    get_max_levenshtein_sim,
+    levenshtein_sim,
+    normalize_text,
+)
 
 
 class TestLevenshteinSim:
@@ -37,28 +42,56 @@ class TestLevenshteinSim:
         assert sim < 1.0
 
 
-class TestEvaluateRecordEditSim:
-    def test_exact_match(self) -> None:
-        metrics = evaluate_record({"abstract": "hello world"}, {"abstract": "hello world"})
-        assert metrics["abstract_edit_sim"] == pytest.approx(1.0)
+class TestGetMaxLevenshteinSim:
+    def test_picks_best_of_multiple_golds(self) -> None:
+        assert get_max_levenshtein_sim("hello", ["world", "hello"]) == pytest.approx(1.0)
 
-    def test_penalises_extra_text(self) -> None:
-        gold = "short abstract"
-        predicted = "short abstract with a lot of extra words appended"
-        metrics = evaluate_record({"abstract": predicted}, {"abstract": gold})
-        assert metrics["abstract_edit_sim"] < 1.0
-        # abstract_recall (jaccard recall) scores 1.0 for the same input — showing the difference
-        assert metrics["abstract_recall"] == pytest.approx(1.0)
+    def test_returns_max_not_first_or_last(self) -> None:
+        best = levenshtein_sim("hello", "helo")
+        worse = levenshtein_sim("hello", "world")
+        result = get_max_levenshtein_sim("hello", ["world", "helo", "world"])
+        assert result == pytest.approx(best)
+        assert result > worse
 
-    def test_multi_candidate_takes_max(self) -> None:
-        predicted = "the correct abstract text"
-        gold = {"abstracts": ["a completely different abstract", "the correct abstract text"]}
-        metrics = evaluate_record({"abstract": predicted}, gold)
-        assert metrics["abstract_edit_sim"] == pytest.approx(1.0)
 
-    def test_partial_match_between_zero_and_one(self) -> None:
-        metrics = evaluate_record(
-            {"abstract": "the quick brown fox"},
-            {"abstract": "the quick brown dog"},
-        )
-        assert 0.0 < metrics["abstract_edit_sim"] < 1.0
+class TestEvaluateRecord:
+    @pytest.mark.parametrize(
+        "params",
+        [
+            pytest.param({"field": "abstract", "list_key": "abstracts"}, id="abstract"),
+            pytest.param({"field": "title", "list_key": "titles"}, id="title"),
+        ],
+    )
+    class TestCommonEditSim:
+        def test_edit_sim_exact_match(self, params: dict) -> None:
+            field = params["field"]
+            metrics = evaluate_record({field: "exact text"}, {field: "exact text"})
+            assert metrics[f"{field}_edit_sim"] == pytest.approx(1.0)
+
+        def test_edit_sim_partial_match_between_zero_and_one(self, params: dict) -> None:
+            field = params["field"]
+            metrics = evaluate_record(
+                {field: "the quick brown fox"},
+                {field: "the quick brown dog"},
+            )
+            assert 0.0 < metrics[f"{field}_edit_sim"] < 1.0
+
+        def test_edit_sim_multi_candidate_takes_max(self, params: dict) -> None:
+            field, list_key = params["field"], params["list_key"]
+            predicted = "the correct text"
+            golds = ["a completely different text", "the correct text"]
+            metrics = evaluate_record({field: predicted}, {list_key: golds})
+            assert metrics[f"{field}_edit_sim"] == pytest.approx(get_max_levenshtein_sim(predicted, golds))
+
+    class TestTitleEditSim:
+        def test_should_normalize_text(self) -> None:
+            metrics = evaluate_record(
+                {"title": "A Great Paper"},
+                {"title": "a great paper!"},
+            )
+            assert metrics["title_edit_sim"] == (
+                get_max_levenshtein_sim(
+                    predicted=normalize_text("A Great Paper"),
+                    golds=[normalize_text("a great paper!")],
+                )
+            )

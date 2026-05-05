@@ -15,6 +15,7 @@ _SHORT_WORD_THRESHOLD = 50
 
 _METRIC_TO_FIELD: Dict[str, str] = {
     "title_match": "title",
+    "title_edit_sim": "title",
     "abstract_recall": "abstract",
     "abstract_edit_sim": "abstract",
     "language_match": "language",
