@@ -51,12 +51,12 @@ class TestGetMaxLevenshteinSim:
 
 class TestEvaluateRecord:
     @pytest.mark.parametrize("field,list_key", [("abstract", "abstracts"), ("title", "titles")])
-    def test_edit_sim_exact_match(self, field: str, list_key: str) -> None:
+    def test_edit_sim_exact_match(self, field: str, _list_key: str) -> None:
         metrics = evaluate_record({field: "exact text"}, {field: "exact text"})
         assert metrics[f"{field}_edit_sim"] == pytest.approx(1.0)
 
     @pytest.mark.parametrize("field,list_key", [("abstract", "abstracts"), ("title", "titles")])
-    def test_edit_sim_partial_match_between_zero_and_one(self, field: str, list_key: str) -> None:
+    def test_edit_sim_partial_match_between_zero_and_one(self, field: str, _list_key: str) -> None:
         metrics = evaluate_record(
             {field: "the quick brown fox"},
             {field: "the quick brown dog"},
