@@ -107,15 +107,12 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
 
     predicted_abstract = predicted.get("abstract", "")
     gold_abstracts = gold.get("abstracts") or [gold.get("abstract", "")]
+    assert gold_abstracts
     metrics["abstract_recall"] = (
         max(jaccard_recall(abstract, predicted_abstract) for abstract in gold_abstracts)
-        if gold_abstracts
-        else jaccard_recall(gold.get("abstract", ""), predicted_abstract)
     )
     metrics["abstract_edit_sim"] = (
         max(levenshtein_sim(abstract, predicted_abstract) for abstract in gold_abstracts)
-        if gold_abstracts
-        else levenshtein_sim(gold.get("abstract", ""), predicted_abstract)
     )
 
     predicted_keywords = predicted.get("keywords") or []
