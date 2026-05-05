@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from grobid_metadata_enricher.evaluation import evaluate_record, levenshtein_sim
+from grobid_metadata_enricher.evaluation import evaluate_record, get_max_levenshtein_sim, levenshtein_sim
 
 
 class TestLevenshteinSim:
@@ -35,6 +35,18 @@ class TestLevenshteinSim:
         predicted = "short abstract with a lot of extra words appended by the model"
         sim = levenshtein_sim(gold, predicted)
         assert sim < 1.0
+
+
+class TestGetMaxLevenshteinSim:
+    def test_picks_best_of_multiple_golds(self) -> None:
+        assert get_max_levenshtein_sim("hello", ["world", "hello"]) == pytest.approx(1.0)
+
+    def test_returns_max_not_first_or_last(self) -> None:
+        best = levenshtein_sim("hello", "helo")
+        worse = levenshtein_sim("hello", "world")
+        result = get_max_levenshtein_sim("hello", ["world", "helo", "world"])
+        assert result == pytest.approx(best)
+        assert result > worse
 
 
 class TestEvaluateRecord:

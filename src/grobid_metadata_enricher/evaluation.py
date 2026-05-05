@@ -75,6 +75,10 @@ def levenshtein_sim(a: str, b: str) -> float:
     return _Levenshtein.normalized_similarity(a or "", b or "")
 
 
+def get_max_levenshtein_sim(predicted: str, golds: List[str]) -> float:
+    return max(levenshtein_sim(predicted, gold) for gold in golds)
+
+
 def language_match(gold: str, predicted: str) -> Optional[int]:
     if not gold:
         return None
@@ -95,7 +99,7 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
     normalized_gold_titles = [normalize_text(gold_title) for gold_title in gold_titles]
     metrics["title_match"] = 1 if any(predicted_title == title for title in normalized_gold_titles if title) else 0
     metrics["title_edit_sim"] = (
-        max(levenshtein_sim(title, predicted_title) for title in normalized_gold_titles)
+        get_max_levenshtein_sim(predicted=predicted_title, golds=normalized_gold_titles)
     )
 
     predicted_authors = predicted.get("authors") or []
@@ -113,7 +117,7 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
         max(jaccard_recall(abstract, predicted_abstract) for abstract in gold_abstracts)
     )
     metrics["abstract_edit_sim"] = (
-        max(levenshtein_sim(abstract, predicted_abstract) for abstract in gold_abstracts)
+        get_max_levenshtein_sim(predicted=predicted_abstract, golds=gold_abstracts)
     )
 
     predicted_keywords = predicted.get("keywords") or []
