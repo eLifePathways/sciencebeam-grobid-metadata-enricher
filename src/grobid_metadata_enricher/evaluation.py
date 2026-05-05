@@ -370,11 +370,6 @@ def write_root_cause_report(
         "rights_match",
         "types_recall",
         "formats_recall",
-        "body_section_recall",
-        "figure_caption_recall",
-        "table_caption_recall",
-        "reference_recall",
-        "reference_recall_combined",
     ]
     present_metrics = [f"{metric}~{summary[metric]:.3f}" for metric in metric_order if metric in summary]
     if present_metrics:
