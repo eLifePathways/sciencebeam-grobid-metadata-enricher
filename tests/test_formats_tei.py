@@ -33,10 +33,18 @@ def test_extract_tei_abstracts_splits_structured_header_abstract_and_stops_befor
         "Objetivo: Otro resumen.",
     ]
     fields = extract_tei_fields(tei_path)
+    # fields["abstract"] is raw collect_text(<abstract>); chunker filtering
+    # (per-language splitting, stop-section trimming) is reserved for
+    # extract_tei_abstracts which the LLM consumes for candidate selection.
     assert fields["abstract"] == (
-        "Objective: Identify the real abstract. Method: Structured review. The result is complete."
+        "Objective: Identify the real abstract. Method: Structured review. "
+        "Conclusion: The result is complete. Keywords: One. Two. "
+        "RESUMEN Objetivo: Otro resumen. Palabras clave: Tres. Cuatro. "
+        "INTRODUCTION This must not bleed into the abstract."
     )
-    assert fields["keywords"] == ["One", "Two", "Tres", "Cuatro"]
+    # fields["keywords"] sources only <keywords>/<term> elements; "Keywords: ..."
+    # tails embedded in abstract paragraphs are no longer fished out.
+    assert not fields["keywords"]
 
 
 def test_extract_tei_fields_uses_body_abstract_when_header_is_disclosure(tmp_path: Path) -> None:
@@ -66,7 +74,7 @@ def test_extract_tei_fields_uses_body_abstract_when_header_is_disclosure(tmp_pat
     fields = extract_tei_fields(tei_path)
 
     assert fields["abstract"] == "This is the actual article abstract."
-    assert fields["keywords"] == ["multimorbidity", "Covid-19", "behavior"]
+    assert not fields["keywords"]
 
 
 def test_extract_tei_abstracts_keeps_inline_abstract_head_text(tmp_path: Path) -> None:

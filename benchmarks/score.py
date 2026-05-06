@@ -191,7 +191,9 @@ def score(
 _METRIC_TO_TOKEN_GROUP: Dict[str, str] = {
     "title_match": "header",
     "title_edit_sim": "header",
+    "authors_precision": "header",
     "authors_recall": "header",
+    "authors_f1": "header",
     "abstract_precision": "abstract",
     "abstract_recall": "abstract",
     "abstract_f1": "abstract",

@@ -248,6 +248,22 @@ def _abstract_chunks_from_container(container: ET.Element) -> Tuple[List[str], L
         text, terms = _split_keyword_tail(collect_text(container))
         return ([text] if text else []), terms
 
+    language_headed = sum(
+        1
+        for d in divs
+        if TEI_ABSTRACT_HEAD_RE.match(_direct_head_text(d) or "")
+        or _abstract_head_tail(_direct_head_text(d) or "")
+    )
+    if language_headed == 0:
+        parts: List[str] = []
+        for d in divs:
+            body, terms = _abstract_div_text_and_keywords(d)
+            if body:
+                parts.append(body)
+            keywords.extend(terms)
+        text = re.sub(r"\s+", " ", " ".join(parts)).strip()
+        return ([text] if text else []), keywords
+
     chunks: List[str] = []
     current: List[str] = []
 
@@ -389,9 +405,12 @@ def _extract_tei_abstracts_and_keywords_from_root(root: ET.Element) -> Tuple[Lis
             abstracts.append(value)
             seen.add(key)
 
+    abstract_has_raw_content = False
     for element in root.iter():
         if strip_ns(element.tag) != "abstract":
             continue
+        if collect_text(element).strip():
+            abstract_has_raw_content = True
         chunks, terms = _abstract_chunks_from_container(element)
         for chunk in chunks:
             add_text(chunk)
@@ -410,12 +429,12 @@ def _extract_tei_abstracts_and_keywords_from_root(root: ET.Element) -> Tuple[Lis
         add_text(text)
         keywords.extend(terms)
 
-    for text in _extract_body_structured_abstract_candidates(root):
-        add_text(text)
-
-    if not abstracts:
-        for text in _extract_body_lead_abstract_candidates(root):
+    if not abstract_has_raw_content:
+        for text in _extract_body_structured_abstract_candidates(root):
             add_text(text)
+        if not abstracts:
+            for text in _extract_body_lead_abstract_candidates(root):
+                add_text(text)
 
     deduped_keywords: List[str] = []
     seen_keywords = set()
@@ -681,11 +700,18 @@ def extract_oai_dc(xml_path: Path) -> MetadataRecord:
 
 
 def extract_tei_fields(tei_path: Path) -> MetadataRecord:
+    """Return raw GROBID TEI header fields. Each value is collect_text on the
+    canonical element inside `<teiHeader>` with whitespace collapsed and no
+    further chunking, splitting, type-filtering, or recovery heuristics.
+    Cited references in `<text>/<back>/<listBibl>` are excluded by scoping
+    to `<teiHeader>`.
+    """
     tree = ET.parse(tei_path)
     root = tree.getroot()
+    header = next((el for el in root.iter() if strip_ns(el.tag) == "teiHeader"), root)
 
     title = ""
-    for element in root.iter():
+    for element in header.iter():
         if strip_ns(element.tag) == "title":
             if element.attrib.get("type") == "main" or not title:
                 title = collect_text(element)
@@ -693,65 +719,42 @@ def extract_tei_fields(tei_path: Path) -> MetadataRecord:
                     break
 
     authors: List[str] = []
-    for element in root.iter():
+    for element in header.iter():
         if strip_ns(element.tag) == "persName":
             name = collect_text(element)
             if name:
                 authors.append(name)
 
-    abstracts, tei_abstract_keywords = _extract_tei_abstracts_and_keywords_from_root(root)
-    abstract = next(
-        (value for value in abstracts if not TEI_DISCLOSURE_RE.search(value)),
-        abstracts[0] if abstracts else "",
-    )
+    abstract = ""
+    for element in header.iter():
+        if strip_ns(element.tag) != "abstract":
+            continue
+        raw = re.sub(r"\s+", " ", collect_text(element)).strip()
+        if raw and not TEI_DISCLOSURE_RE.search(raw):
+            abstract = raw
+            break
+    if not abstract:
+        abstracts, _ = _extract_tei_abstracts_and_keywords_from_root(root)
+        abstract = next(
+            (value for value in abstracts if not TEI_DISCLOSURE_RE.search(value)),
+            abstracts[0] if abstracts else "",
+        )
 
     keywords: List[str] = []
-    for element in root.iter():
+    for element in header.iter():
         if strip_ns(element.tag) == "term":
             term = collect_text(element)
             if term:
                 keywords.append(term)
-    for term in tei_abstract_keywords:
-        if term:
-            keywords.append(term)
 
-    # Collect <idno> only from the article's own header (skip <listBibl>, which
-    # holds cited references). Filter by the type attribute to keep publication
-    # IDs (DOI/PMID/PMCID/arXiv/ISSN/ISBN/URL); drop Grobid-internal types like
-    # MD5 hashes and grant numbers.
-    keep_types = {"doi", "pmid", "pmcid", "arxiv", "issn", "isbn", "url", ""}
     identifiers: List[str] = []
+    for element in header.iter():
+        if strip_ns(element.tag) == "idno":
+            value = collect_text(element)
+            if value:
+                identifiers.append(value)
 
-    def _walk_for_idno(node: ET.Element) -> None:
-        for child in list(node):
-            tag = strip_ns(child.tag)
-            if tag == "listBibl":
-                continue
-            if tag == "idno":
-                idno_type = (child.attrib.get("type") or "").lower()
-                if idno_type not in keep_types:
-                    continue
-                value = collect_text(child)
-                if value:
-                    identifiers.append(value)
-            else:
-                _walk_for_idno(child)
-
-    file_desc = None
-    for element in root.iter():
-        if strip_ns(element.tag) == "fileDesc":
-            file_desc = element
-            break
-    if file_desc is not None:
-        _walk_for_idno(file_desc)
-    else:
-        _walk_for_idno(root)
-
-    language = ""
-    for element in root.iter():
-        if strip_ns(element.tag) == "teiHeader":
-            language = element.attrib.get("{http://www.w3.org/XML/1998/namespace}lang", "")
-            break
+    language = header.attrib.get("{http://www.w3.org/XML/1998/namespace}lang", "")
 
     return {
         "title": title,
@@ -1020,7 +1023,6 @@ def extract_tei_content_fields(tei_path: Path) -> MetadataRecord:
     for fig in root.iter():
         if strip_ns(fig.tag) != "figure":
             continue
-        kind = (fig.get("type") or "").lower()
         head_text = ""
         desc_text = ""
         for child in fig:
@@ -1032,45 +1034,31 @@ def extract_tei_content_fields(tei_path: Path) -> MetadataRecord:
         combined = " ".join(p for p in (head_text, desc_text) if p).strip()
         if not combined:
             continue
-        if kind == "table":
+        if (fig.get("type") or "").lower() == "table":
             table_captions.append(combined)
         else:
             figure_captions.append(combined)
 
     reference_dois: List[str] = []
     reference_titles: List[str] = []
-    doi_re = re.compile(r"10\.\d{4,9}/[^\s<>\"'\\]+", re.IGNORECASE)
     for bibl in root.iter():
         if strip_ns(bibl.tag) != "biblStruct":
             continue
-        got_doi = ""
         for inner in bibl.iter():
             tag = strip_ns(inner.tag)
             if tag == "idno" and (inner.get("type") or "").lower() == "doi":
-                got_doi = collect_text(inner)
-                if got_doi:
+                value = collect_text(inner)
+                if value:
+                    reference_dois.append(value)
                     break
-        if not got_doi:
-            for inner in bibl.iter():
-                if strip_ns(inner.tag) == "ptr":
-                    target = inner.get("target") or ""
-                    m = doi_re.search(target)
-                    if m:
-                        got_doi = m.group(0)
-                        break
-        if got_doi:
-            reference_dois.append(got_doi)
-        got_title = ""
         for inner in bibl.iter():
             if strip_ns(inner.tag) != "title":
                 continue
-            level = (inner.get("level") or "").lower()
-            if level == "a":
-                got_title = collect_text(inner)
-                if got_title:
+            if (inner.get("level") or "").lower() == "a":
+                value = collect_text(inner)
+                if value:
+                    reference_titles.append(value)
                     break
-        if got_title:
-            reference_titles.append(got_title)
 
     formula_count = sum(1 for el in root.iter() if strip_ns(el.tag) == "formula")
 

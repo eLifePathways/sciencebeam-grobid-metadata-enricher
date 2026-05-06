@@ -254,10 +254,18 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
     predicted_authors = predicted.get("authors") or []
     gold_authors = gold.get("authors") or []
     if gold_authors:
-        matches = sum(1 for author in gold_authors if author_match(author, predicted_authors))
-        metrics["authors_recall"] = matches / max(1, len(gold_authors))
+        recall_hits = sum(1 for g in gold_authors if author_match(g, predicted_authors))
+        precision_hits = sum(1 for p in predicted_authors if author_match(p, gold_authors))
+        rec = recall_hits / max(1, len(gold_authors))
+        pre = precision_hits / max(1, len(predicted_authors)) if predicted_authors else 0.0
+        f1 = 2 * pre * rec / (pre + rec) if (pre + rec) > 0 else 0.0
+        metrics["authors_precision"] = pre
+        metrics["authors_recall"] = rec
+        metrics["authors_f1"] = f1
     else:
-        metrics["authors_recall"] = 1.0
+        metrics["authors_precision"] = None
+        metrics["authors_recall"] = None
+        metrics["authors_f1"] = None
 
     predicted_abstract = predicted.get("abstract", "")
     gold_abstracts = [a for a in (gold.get("abstracts") or [gold.get("abstract", "")]) if a]
