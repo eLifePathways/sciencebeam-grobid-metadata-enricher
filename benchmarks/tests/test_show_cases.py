@@ -220,6 +220,21 @@ class TestExportRecord:
         out = self._out_dir(tmp_path, "improvement", "title_edit_sim", "ore")
         assert (out / "doc1.tei.xml").read_text() == "<TEI custom/>"
 
+    def test_copies_prediction_json_when_present(self, tmp_path: Path) -> None:
+        r = _make_record(record_id="doc1", corpus="ore")
+        pred_dir = tmp_path / "ore" / "predictions" / "grobid"
+        pred_dir.mkdir(parents=True)
+        (pred_dir / "doc1.json").write_text('{"title": "Grobid Title"}', encoding="utf-8")
+        _export_record(r, tmp_path, "title_edit_sim", "title", "improvement", "llm_pred", "grobid_pred")
+        out = self._out_dir(tmp_path, "improvement", "title_edit_sim", "ore")
+        assert (out / "doc1.prediction.json").read_text() == '{"title": "Grobid Title"}'
+
+    def test_skips_prediction_json_when_absent(self, tmp_path: Path) -> None:
+        r = _make_record(record_id="doc1", corpus="ore")
+        _export_record(r, tmp_path, "title_edit_sim", "title", "improvement", "llm_pred", "grobid_pred")
+        out = self._out_dir(tmp_path, "improvement", "title_edit_sim", "ore")
+        assert not (out / "doc1.prediction.json").exists()
+
     def test_tei_default_parser_not_used_when_only_custom_exists(self, tmp_path: Path) -> None:
         r = _make_record(record_id="doc1", corpus="ore")
         tei_dir = tmp_path / "ore" / "tei" / "custom_parser"

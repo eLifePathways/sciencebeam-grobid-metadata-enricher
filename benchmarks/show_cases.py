@@ -169,6 +169,10 @@ def _export_record(
     if tei_src.exists():
         shutil.copy(tei_src, out_dir / f"{record_id}.tei.xml")
 
+    pred_src = run_dir / corpus / "predictions" / parser / f"{record_id}.json"
+    if pred_src.exists():
+        shutil.copy(pred_src, out_dir / f"{record_id}.prediction.json")
+
     gold_val = (r.get("gold") or {}).get(field)
     val_b = (r.get(system_b_pred) or {}).get(field)
     val_a = (r.get(system_a_pred) or {}).get(field)
