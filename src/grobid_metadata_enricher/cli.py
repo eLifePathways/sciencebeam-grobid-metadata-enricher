@@ -51,6 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=20)
     parser.add_argument("--per-document-llm-workers", type=int, default=5)
     parser.add_argument("--llm-concurrency", type=int, default=20)
+    parser.add_argument(
+        "--aoai-routing",
+        choices=["round_robin", "stable"],
+        default=None,
+        help="AOAI pool routing strategy. Use 'stable' to keep a prompt on the same primary backend.",
+    )
     return parser
 
 
@@ -73,5 +79,6 @@ def main() -> None:
         workers=args.workers,
         per_document_llm_workers=args.per_document_llm_workers,
         llm_concurrency=args.llm_concurrency,
+        llm_pool_routing=args.aoai_routing,
     )
     run_pipeline(settings)

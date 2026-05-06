@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -67,7 +68,10 @@ class AoaiBackend:
 
 
 class AoaiPool:
-    def __init__(self, pool_path: Path) -> None:
+    _ROUTING_ROUND_ROBIN = "round_robin"
+    _ROUTING_STABLE = "stable"
+
+    def __init__(self, pool_path: Path, routing: Optional[str] = None) -> None:
         with pool_path.open("r", encoding="utf-8") as handle:
             raw = json.load(handle)
         self.backends = [
@@ -82,6 +86,12 @@ class AoaiPool:
         ]
         if not self.backends:
             raise RuntimeError(f"No backends found in {pool_path}")
+        self.routing = routing or os.getenv("AOAI_POOL_ROUTING", self._ROUTING_ROUND_ROBIN)
+        if self.routing not in {self._ROUTING_ROUND_ROBIN, self._ROUTING_STABLE}:
+            raise ValueError(
+                f"Unsupported AOAI pool routing {self.routing!r}; "
+                f"expected {self._ROUTING_ROUND_ROBIN!r} or {self._ROUTING_STABLE!r}"
+            )
         self._index = 0
         self._lock = threading.Lock()
 
@@ -90,6 +100,23 @@ class AoaiPool:
             backend = self.backends[self._index % len(self.backends)]
             self._index += 1
         return backend
+
+    def backend_for_request(
+        self,
+        messages: List[Dict[str, str]],
+        step_name: str = "",
+        attempt: int = 0,
+    ) -> AoaiBackend:
+        if self.routing == self._ROUTING_ROUND_ROBIN:
+            return self.next_backend()
+        payload = {
+            "messages": messages,
+            "step_name": step_name or "",
+        }
+        key = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.blake2b(key.encode("utf-8"), digest_size=8).digest()
+        index = (int.from_bytes(digest, "big") + max(0, int(attempt))) % len(self.backends)
+        return self.backends[index]
 
     def chat_with_usage(
         self,
@@ -105,7 +132,7 @@ class AoaiPool:
             span.set_attribute("input.value", json.dumps(messages, ensure_ascii=False))
             last_error: Optional[Exception] = None
             for attempt in range(max_attempts):
-                backend = self.next_backend()
+                backend = self.backend_for_request(messages, step_name=step_name, attempt=attempt)
                 url = (
                     backend.endpoint.rstrip("/")
                     + f"/openai/deployments/{backend.deployment}/chat/completions"

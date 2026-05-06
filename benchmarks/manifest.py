@@ -28,16 +28,20 @@ def build_manifest(cfg: Dict[str, Any], workdir: Path, mode: str) -> List[Dict[s
 
     LOGGER.info("Building manifest for mode %s with sample sizes: %s and seed: %s...", mode, sample_sizes, seed)
     LOGGER.info("Corpora to process: %s", cfg['corpora'])
+    local_root = os.environ.get("BENCH_LOCAL_PARQUET_DIR")
     for corpus in cfg["corpora"]:
         LOGGER.info("Processing corpus %s...", corpus)
         filename, id_column = _resolve_entry(cfg["dataset"]["files"][corpus])
-        parquet_path = hf_hub_download(
-            repo_id=cfg["dataset"]["repo_id"],
-            filename=filename,
-            revision=cfg["dataset"]["revision"],
-            repo_type="dataset",
-            token=token,
-        )
+        if local_root:
+            parquet_path = str(Path(local_root) / filename)
+        else:
+            parquet_path = hf_hub_download(
+                repo_id=cfg["dataset"]["repo_id"],
+                filename=filename,
+                revision=cfg["dataset"]["revision"],
+                repo_type="dataset",
+                token=token,
+            )
 
         # Two-pass streaming read so we never load all PDFs into RAM.
         # Pass 1: ids only (~few MB) to pick the sample indices.

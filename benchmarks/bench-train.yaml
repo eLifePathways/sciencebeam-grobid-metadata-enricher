@@ -53,29 +53,32 @@ seeds:
 
 metrics:
   - title_match
-  - authors_recall
-  - abstract_recall
+  - authors_f1
+  - abstract_f1
   - abstract_edit_sim
-  - keywords_recall
+  - keywords_f1
   - language_match
-  - identifiers_recall
-  # Gated on the corresponding gold keys; silent for biorxiv / scielo_preprints.
-  - body_section_recall
-  - figure_caption_recall
-  - table_caption_recall
-  - reference_recall
-  - reference_recall_combined
+  - identifiers_f1
+  # Gated on (gold has field) AND (pipeline actually extracted the field for this corpus).
+  - body_section_f1
+  - figure_caption_f1
+  - table_caption_f1
+  - reference_f1
+  - reference_combined_f1
 
 bootstrap:
   n_resamples: 200
   confidence_level: 0.95
 
-doc_concurrency: 4   # lfoppiano/grobid:0.9.0-crf saturates at ~4-6 parallel; 10 hits HTTP 503
+doc_concurrency: 4   # legacy one-stage fallback
+parse_concurrency: 4   # lfoppiano/grobid:0.9.0-crf saturates at ~4-6 parallel; 10 hits HTTP 503
+llm_doc_concurrency: 12
 llm:
   temperature: 0.0
   max_tokens: 800
   workers: 5
-  concurrency: 20
+  concurrency: 48
+  routing: stable
 
 grobid:
   url: http://localhost:8070/api

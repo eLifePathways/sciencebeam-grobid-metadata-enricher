@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from rapidfuzz.distance import Levenshtein as _Levenshtein
+
+PRTriple = Tuple[Optional[float], Optional[float], Optional[float]]
 
 WORD_RE = re.compile(r"[A-Za-z0-9]+", re.UNICODE)
 
@@ -36,14 +38,6 @@ def author_match(gold: str, predicted_authors: List[str]) -> bool:
     return False
 
 
-def jaccard_recall(gold: str, predicted: str) -> float:
-    gold_tokens = set(normalize_tokens(gold))
-    predicted_tokens = set(normalize_tokens(predicted))
-    if not gold_tokens:
-        return 1.0
-    return len(gold_tokens & predicted_tokens) / max(1, len(gold_tokens))
-
-
 def keyword_recall(gold: List[str], predicted: List[str]) -> float:
     gold_values = {normalize_text(value) for value in gold if normalize_text(value)}
     predicted_values = {normalize_text(value) for value in predicted if normalize_text(value)}
@@ -60,7 +54,10 @@ def scalar_match(gold: str, predicted: str) -> Optional[int]:
 
 
 def normalize_identifier(value: str) -> str:
-    return value.strip().lower().replace("doi:", "").strip()
+    normalized = value.strip().lower().replace("doi:", "").strip()
+    if normalized.startswith("10."):
+        normalized = re.sub(r"\s+", "", normalized)
+    return normalized
 
 
 def identifier_recall(gold: List[str], predicted: List[str]) -> float:
@@ -73,6 +70,10 @@ def identifier_recall(gold: List[str], predicted: List[str]) -> float:
 
 def levenshtein_sim(a: str, b: str) -> float:
     return _Levenshtein.normalized_similarity(a or "", b or "")
+
+
+def normalized_edit_sim(a: str, b: str) -> float:
+    return levenshtein_sim(normalize_text(a), normalize_text(b))
 
 
 def get_max_levenshtein_sim(predicted: str, golds: List[str]) -> float:
@@ -90,6 +91,154 @@ def language_match(gold: str, predicted: str) -> Optional[int]:
     return 1 if gold_value == predicted_value else 0
 
 
+def _set_pr(gold: set, pred: set) -> PRTriple:
+    if not gold:
+        return (None, None, None)
+    inter = len(gold & pred)
+    rec = inter / len(gold)
+    pre = inter / len(pred) if pred else 0.0
+    f1 = 2 * pre * rec / (pre + rec) if (pre + rec) > 0 else 0.0
+    return (pre, rec, f1)
+
+
+def _bipartite_pr(
+    n_gold: int,
+    n_pred: int,
+    is_match: Callable[[int, int], bool],
+) -> PRTriple:
+    if n_gold == 0:
+        return (None, None, None)
+    pred_used = [False] * n_pred
+    matched = 0
+    for gi in range(n_gold):
+        for pi in range(n_pred):
+            if pred_used[pi]:
+                continue
+            if is_match(gi, pi):
+                pred_used[pi] = True
+                matched += 1
+                break
+    rec = matched / n_gold
+    pre = matched / n_pred if n_pred else 0.0
+    f1 = 2 * pre * rec / (pre + rec) if (pre + rec) > 0 else 0.0
+    return (pre, rec, f1)
+
+
+def _abstract_pr(gold: str, predicted: str) -> PRTriple:
+    sim = normalized_edit_sim(gold, predicted)
+    return (sim, sim, sim)
+
+
+def _keyword_pr(gold: List[str], predicted: List[str]) -> PRTriple:
+    g = {normalize_text(v) for v in (gold or []) if normalize_text(v)}
+    p = {normalize_text(v) for v in (predicted or []) if normalize_text(v)}
+    return _set_pr(g, p)
+
+
+def _identifier_pr(gold: List[str], predicted: List[str]) -> PRTriple:
+    g = {normalize_identifier(v) for v in (gold or []) if v and v.strip()}
+    p = {normalize_identifier(v) for v in (predicted or []) if v and v.strip()}
+    g.discard("")
+    p.discard("")
+    return _set_pr(g, p)
+
+
+def _edit_similarity_match(gold: str, pred: str, threshold: float) -> bool:
+    if not normalize_text(gold) or not normalize_text(pred):
+        return False
+    return normalized_edit_sim(gold, pred) >= threshold
+
+
+def _section_head_pr(gold_heads: List[str], pred_heads: List[str], threshold: float = 0.7) -> PRTriple:
+    golds = [h for h in (gold_heads or []) if normalize_text(h)]
+    preds = [h for h in (pred_heads or []) if normalize_text(h)]
+    return _bipartite_pr(
+        len(golds),
+        len(preds),
+        lambda gi, pi: _edit_similarity_match(golds[gi], preds[pi], threshold),
+    )
+
+
+def _caption_set_pr(gold_captions: List[str], pred_captions: List[str]) -> PRTriple:
+    golds = [c for c in (gold_captions or []) if normalize_text(c)]
+    preds = [c for c in (pred_captions or []) if normalize_text(c)]
+    if not golds:
+        return (None, None, None)
+    return _bipartite_pr(
+        len(golds),
+        len(preds),
+        lambda gi, pi: normalized_edit_sim(golds[gi], preds[pi]) >= 0.75,
+    )
+
+
+def _reference_pr(gold: Dict[str, Any], predicted: Dict[str, Any]) -> PRTriple:
+    gold_dois = {normalize_identifier(d) for d in (gold.get("reference_dois") or []) if d}
+    pred_dois = {normalize_identifier(d) for d in (predicted.get("reference_dois") or []) if d}
+    gold_dois.discard("")
+    pred_dois.discard("")
+    if gold_dois and pred_dois:
+        return _set_pr(gold_dois, pred_dois)
+    gold_titles = [t for t in (gold.get("reference_titles") or []) if t]
+    if not gold_titles:
+        return (None, None, None)
+    pred_titles = [t for t in (predicted.get("reference_titles") or []) if t]
+    return _section_head_pr(gold_titles, pred_titles, threshold=0.5)
+
+
+def _reference_combined_pr(
+    gold: Dict[str, Any],
+    predicted: Dict[str, Any],
+    edit_threshold: float = 0.5,
+) -> PRTriple:
+    records = gold.get("reference_records") or []
+    if not records:
+        return (None, None, None)
+    pred_doi_set = {normalize_identifier(str(d)) for d in (predicted.get("reference_dois") or []) if d}
+    pred_doi_set.discard("")
+    pred_titles = [str(t) for t in (predicted.get("reference_titles") or []) if t]
+
+    used_doi: set = set()
+    used_title = [False] * len(pred_titles)
+    matched = 0
+    for r in records:
+        doi = normalize_identifier(str(r.get("doi") or ""))
+        title = str(r.get("title") or "")
+        if doi and doi in pred_doi_set and doi not in used_doi:
+            used_doi.add(doi)
+            matched += 1
+            continue
+        if not title:
+            continue
+        title_norm = normalize_text(title)
+        if not title_norm:
+            continue
+        best_i = -1
+        best_sim = -1.0
+        for i, pt in enumerate(pred_titles):
+            if used_title[i]:
+                continue
+            sim = normalized_edit_sim(title_norm, pt)
+            if sim > best_sim:
+                best_sim = sim
+                best_i = i
+        if best_i >= 0 and best_sim >= edit_threshold:
+            used_title[best_i] = True
+            matched += 1
+
+    pred_total = len(pred_doi_set) + len(pred_titles)
+    rec = matched / len(records)
+    pre = matched / pred_total if pred_total else 0.0
+    f1 = 2 * pre * rec / (pre + rec) if (pre + rec) > 0 else 0.0
+    return (pre, rec, f1)
+
+
+def _assign_pr(metrics: Dict[str, Any], name: str, triple: PRTriple) -> None:
+    pre, rec, f1 = triple
+    metrics[f"{name}_precision"] = pre
+    metrics[f"{name}_recall"] = rec
+    metrics[f"{name}_f1"] = f1
+
+
 def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str, Any]:
     metrics: Dict[str, Any] = {}
 
@@ -105,226 +254,77 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
     predicted_authors = predicted.get("authors") or []
     gold_authors = gold.get("authors") or []
     if gold_authors:
-        matches = sum(1 for author in gold_authors if author_match(author, predicted_authors))
-        metrics["authors_recall"] = matches / max(1, len(gold_authors))
+        recall_hits = sum(1 for g in gold_authors if author_match(g, predicted_authors))
+        precision_hits = sum(1 for p in predicted_authors if author_match(p, gold_authors))
+        rec = recall_hits / max(1, len(gold_authors))
+        pre = precision_hits / max(1, len(predicted_authors)) if predicted_authors else 0.0
+        f1 = 2 * pre * rec / (pre + rec) if (pre + rec) > 0 else 0.0
+        metrics["authors_precision"] = pre
+        metrics["authors_recall"] = rec
+        metrics["authors_f1"] = f1
     else:
-        metrics["authors_recall"] = 1.0
+        metrics["authors_precision"] = None
+        metrics["authors_recall"] = None
+        metrics["authors_f1"] = None
 
     predicted_abstract = predicted.get("abstract", "")
-    gold_abstracts = gold.get("abstracts") or [gold.get("abstract", "")]
-    assert gold_abstracts
-    metrics["abstract_recall"] = (
-        max(jaccard_recall(abstract, predicted_abstract) for abstract in gold_abstracts)
-    )
-    metrics["abstract_edit_sim"] = (
-        get_max_levenshtein_sim(predicted=predicted_abstract, golds=gold_abstracts)
-    )
+    gold_abstracts = [a for a in (gold.get("abstracts") or [gold.get("abstract", "")]) if a]
+    if gold_abstracts:
+        prs = [_abstract_pr(g, predicted_abstract) for g in gold_abstracts]
+        best = max(prs, key=lambda t: t[2] or -1.0)
+        metrics["abstract_precision"] = best[0]
+        metrics["abstract_recall"] = best[1]
+        metrics["abstract_f1"] = best[2]
+        metrics["abstract_edit_sim"] = get_max_levenshtein_sim(
+            predicted=predicted_abstract, golds=gold_abstracts
+        )
+    else:
+        metrics["abstract_precision"] = None
+        metrics["abstract_recall"] = None
+        metrics["abstract_f1"] = None
+        metrics["abstract_edit_sim"] = None
 
     predicted_keywords = predicted.get("keywords") or []
     gold_keyword_groups = gold.get("keywords_groups") or {}
     if gold_keyword_groups:
-        recalls = [keyword_recall(group, predicted_keywords) for group in gold_keyword_groups.values() if group]
-        fallback = keyword_recall(gold.get("keywords") or [], predicted_keywords)
-        metrics["keywords_recall"] = max(recalls) if recalls else fallback
+        prs = [_keyword_pr(group, predicted_keywords) for group in gold_keyword_groups.values() if group]
+        prs = [t for t in prs if t[1] is not None]
+        if prs:
+            best = max(prs, key=lambda t: t[2] or -1.0)
+            _assign_pr(metrics, "keywords", best)
+        else:
+            _assign_pr(metrics, "keywords", _keyword_pr(gold.get("keywords") or [], predicted_keywords))
     else:
-        metrics["keywords_recall"] = keyword_recall(gold.get("keywords") or [], predicted_keywords)
+        _assign_pr(metrics, "keywords", _keyword_pr(gold.get("keywords") or [], predicted_keywords))
 
     metrics["publisher_match"] = scalar_match(gold.get("publisher", ""), predicted.get("publisher", ""))
     metrics["date_match"] = scalar_match(gold.get("date", ""), predicted.get("date", ""))
     metrics["language_match"] = language_match(gold.get("language", ""), predicted.get("language", ""))
     metrics["rights_match"] = scalar_match(gold.get("rights", ""), predicted.get("rights", ""))
-    metrics["types_recall"] = keyword_recall(gold.get("types") or [], predicted.get("types") or [])
-    metrics["formats_recall"] = keyword_recall(gold.get("formats") or [], predicted.get("formats") or [])
-    metrics["relations_recall"] = keyword_recall(gold.get("relations") or [], predicted.get("relations") or [])
-    metrics["identifiers_recall"] = identifier_recall(gold.get("identifiers") or [], predicted.get("identifiers") or [])
+    _assign_pr(metrics, "types", _keyword_pr(gold.get("types") or [], predicted.get("types") or []))
+    _assign_pr(metrics, "formats", _keyword_pr(gold.get("formats") or [], predicted.get("formats") or []))
+    _assign_pr(metrics, "relations", _keyword_pr(gold.get("relations") or [], predicted.get("relations") or []))
+    _assign_pr(metrics, "identifiers",
+               _identifier_pr(gold.get("identifiers") or [], predicted.get("identifiers") or []))
 
-    if "body_sections" in gold:
-        metrics["body_section_recall"] = _section_head_recall(
-            gold.get("body_sections") or [], predicted.get("body_sections") or []
-        )
-    if "figure_captions" in gold:
-        metrics["figure_caption_recall"] = _caption_set_recall(
-            gold.get("figure_captions") or [], predicted.get("figure_captions") or []
-        )
-    if "table_captions" in gold:
-        metrics["table_caption_recall"] = _caption_set_recall(
-            gold.get("table_captions") or [], predicted.get("table_captions") or []
-        )
-    if "reference_dois" in gold or "reference_titles" in gold:
-        metrics["reference_recall"] = _reference_recall(gold, predicted)
-    if "reference_records" in gold:
-        metrics["reference_recall_combined"] = _reference_recall_combined(gold, predicted)
+    if "body_sections" in gold and "body_sections" in predicted:
+        _assign_pr(metrics, "body_section",
+                   _section_head_pr(gold.get("body_sections") or [], predicted.get("body_sections") or []))
+    if "figure_captions" in gold and "figure_captions" in predicted:
+        _assign_pr(metrics, "figure_caption",
+                   _caption_set_pr(gold.get("figure_captions") or [], predicted.get("figure_captions") or []))
+    if "table_captions" in gold and "table_captions" in predicted:
+        _assign_pr(metrics, "table_caption",
+                   _caption_set_pr(gold.get("table_captions") or [], predicted.get("table_captions") or []))
+    if ("reference_dois" in gold or "reference_titles" in gold) and (
+        "reference_titles" in predicted or "reference_dois" in predicted
+    ):
+        _assign_pr(metrics, "reference", _reference_pr(gold, predicted))
+    if "reference_records" in gold and (
+        "reference_titles" in predicted or "reference_dois" in predicted
+    ):
+        _assign_pr(metrics, "reference_combined", _reference_combined_pr(gold, predicted))
     return metrics
-
-
-def _section_head_recall(gold_heads: List[str], pred_heads: List[str]) -> Optional[float]:
-    """Fraction of gold section heads with symmetric token-Jaccard >= 0.7 against any pred head."""
-    gold_heads = [h for h in gold_heads if normalize_text(h)]
-    if not gold_heads:
-        return None
-    pred_token_sets = [set(normalize_tokens(h)) for h in pred_heads if normalize_text(h)]
-    matched = 0
-    for h in gold_heads:
-        g_tokens = set(normalize_tokens(h))
-        if not g_tokens:
-            continue
-        best = 0.0
-        for ps in pred_token_sets:
-            if not ps:
-                continue
-            jaccard = len(g_tokens & ps) / max(1, len(g_tokens | ps))
-            best = max(best, jaccard)
-        if best >= 0.7:
-            matched += 1
-    return matched / max(1, len(gold_heads))
-
-
-def _caption_set_recall(gold_captions: List[str], pred_captions: List[str]) -> Optional[float]:
-    """Fraction of gold captions with a matching predicted caption.
-
-    Greedy 1:1 bipartite matching so one pred caption cannot satisfy several
-    gold captions. Match condition is rapidfuzz.ratio >= 75 when rapidfuzz is
-    available, otherwise token-Jaccard >= 0.5 on normalized tokens.
-    """
-    gold_captions = [c for c in gold_captions if normalize_text(c)]
-    if not gold_captions:
-        return None
-    pred_captions = [c for c in pred_captions if normalize_text(c)]
-    try:
-        from rapidfuzz.fuzz import ratio as fuzz_ratio
-
-        used = [False] * len(pred_captions)
-        matched = 0
-        for c in gold_captions:
-            cl = c.lower()
-            best_r = -1.0
-            best_i = -1
-            for i, pc in enumerate(pred_captions):
-                if used[i]:
-                    continue
-                r = fuzz_ratio(cl, pc.lower())
-                if r > best_r:
-                    best_r = r
-                    best_i = i
-            if best_i >= 0 and best_r >= 75:
-                used[best_i] = True
-                matched += 1
-        return matched / max(1, len(gold_captions))
-    except ImportError:
-        pass
-
-    pred_token_sets = [set(normalize_tokens(c)) for c in pred_captions]
-    used = [False] * len(pred_token_sets)
-    matched = 0
-    for c in gold_captions:
-        g_tokens = set(normalize_tokens(c))
-        if not g_tokens:
-            continue
-        best_j = -1.0
-        best_i = -1
-        for i, ps in enumerate(pred_token_sets):
-            if used[i] or not ps:
-                continue
-            j = len(g_tokens & ps) / max(1, len(g_tokens | ps))
-            if j > best_j:
-                best_j = j
-                best_i = i
-        if best_i >= 0 and best_j >= 0.5:
-            used[best_i] = True
-            matched += 1
-    return matched / max(1, len(gold_captions))
-
-
-def _reference_recall(gold: Dict[str, Any], predicted: Dict[str, Any]) -> Optional[float]:
-    """DOI set recall when both sides have DOIs; otherwise title-Jaccard >= 0.5 fallback."""
-    gold_dois = [normalize_identifier(d) for d in (gold.get("reference_dois") or []) if d]
-    pred_dois = [normalize_identifier(d) for d in (predicted.get("reference_dois") or []) if d]
-    gold_set = {d for d in gold_dois if d}
-    pred_set = {d for d in pred_dois if d}
-    if gold_set and pred_set:
-        return len(gold_set & pred_set) / max(1, len(gold_set))
-
-    gold_titles = [t for t in (gold.get("reference_titles") or []) if t]
-    if not gold_titles:
-        return None
-    pred_titles = [t for t in (predicted.get("reference_titles") or []) if t]
-    pred_token_sets = [set(normalize_tokens(t)) for t in pred_titles]
-    matched = 0
-    for t in gold_titles:
-        g_tokens = set(normalize_tokens(t))
-        if not g_tokens:
-            continue
-        best = 0.0
-        for ps in pred_token_sets:
-            if not ps:
-                continue
-            j = len(g_tokens & ps) / max(1, len(g_tokens | ps))
-            best = max(best, j)
-        if best >= 0.5:
-            matched += 1
-    return matched / max(1, len(gold_titles))
-
-
-def _reference_recall_combined(
-    gold: Dict[str, Any],
-    predicted: Dict[str, Any],
-    fuzzy_threshold_pct: int = 50,
-) -> Optional[float]:
-    """Pair-wise recall where each gold ref matches on DOI OR fuzzy title.
-
-    gold['reference_records'] is a list of {'doi': str, 'title': str}. A gold
-    record counts as matched if its normalized DOI is in pred['reference_dois']
-    or any pred title has rapidfuzz.token_set_ratio >= fuzzy_threshold_pct
-    against the gold title. Falls back to token-jaccard >= 0.3 if rapidfuzz
-    is unavailable.
-    """
-    records = gold.get("reference_records") or []
-    if not records:
-        return None
-    pred_doi_set = {normalize_identifier(str(d)) for d in (predicted.get("reference_dois") or []) if d}
-    pred_titles = [str(t) for t in (predicted.get("reference_titles") or []) if t]
-    pred_token_sets = [set(normalize_tokens(t)) for t in pred_titles]
-    try:
-        from rapidfuzz.fuzz import token_set_ratio
-
-        use_fuzzy = True
-    except ImportError:
-        use_fuzzy = False
-
-    matched = 0
-    for r in records:
-        doi = str(r.get("doi") or "")
-        title = str(r.get("title") or "")
-        if doi:
-            d = normalize_identifier(doi)
-            if d and d in pred_doi_set:
-                matched += 1
-                continue
-        if not title:
-            continue
-        if use_fuzzy:
-            tl = title.lower()
-            best = 0.0
-            for pt in pred_titles:
-                rr = token_set_ratio(tl, pt.lower())
-                best = max(best, rr)
-                if best >= fuzzy_threshold_pct:
-                    break
-            if best >= fuzzy_threshold_pct:
-                matched += 1
-        else:
-            g_tokens = set(normalize_tokens(title))
-            if not g_tokens:
-                continue
-            best = 0.0
-            for ps in pred_token_sets:
-                if not ps:
-                    continue
-                j = len(g_tokens & ps) / max(1, len(g_tokens | ps))
-                best = max(best, j)
-            if best >= 0.3:
-                matched += 1
-    return matched / max(1, len(records))
 
 
 def aggregate_metrics(per_document: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -361,17 +361,17 @@ def write_root_cause_report(
         "title_match",
         "title_edit_sim",
         "authors_recall",
-        "abstract_recall",
+        "abstract_f1",
         "abstract_edit_sim",
-        "keywords_recall",
+        "keywords_f1",
         "publisher_match",
         "date_match",
         "language_match",
-        "identifiers_recall",
-        "relations_recall",
+        "identifiers_f1",
+        "relations_f1",
         "rights_match",
-        "types_recall",
-        "formats_recall",
+        "types_f1",
+        "formats_f1",
     ]
     present_metrics = [f"{metric}~{summary[metric]:.3f}" for metric in metric_order if metric in summary]
     if present_metrics:

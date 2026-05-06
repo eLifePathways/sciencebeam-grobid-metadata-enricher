@@ -63,12 +63,36 @@ _STAGE_TO_METRIC_GROUP: Dict[str, str] = {
     "OCR_CLEANUP": "abstract",
     "ABSTRACT_FROM_OCR": "abstract",
     "KEYWORD_TRANSLATE": "keywords",
+    "KEYWORD_EXTRACT": "keywords",
+    "KEYWORD_INFER": "keywords",
+    "KEYWORD_SELECT": "keywords",
+    "IDENTIFIER_SELECT": "header",
     "CONTENT_HEAD": "content",
+    "CONTENT_BODY_SECTIONS": "content",
     "CONTENT_REFERENCES": "content",
+    "CONTENT_FIGURE_CAPTIONS": "content",
     "CONTENT_TABLES_FIGURES": "content",
+    "CONTENT_TABLE_CAPTIONS": "content",
 }
 
 _TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "reasoning_tokens")
+
+
+def _benchmark_paths(row: Dict[str, str], out_dir: Path, cfg: Dict[str, Any]) -> Dict[str, Path]:
+    parser = cfg["grobid"].get("parser", DEFAULT_PARSER)
+    corpus_out = out_dir / row["corpus"]
+    return {
+        "pdf": Path(row["pdf_path"]),
+        "xml": Path(row["xml_path"]),
+        "tei": corpus_out / "tei" / parser / f"{row['record_id']}.tei.xml",
+        "alto": corpus_out / "alto" / f"{row['record_id']}.alto.xml",
+        "prediction": corpus_out / "predictions" / parser / f"{row['record_id']}.json",
+    }
+
+
+def _ensure_benchmark_dirs(paths: Dict[str, Path]) -> None:
+    for key in ("tei", "alto", "prediction"):
+        paths[key].parent.mkdir(parents=True, exist_ok=True)
 
 
 class UsageRecorder:
@@ -150,7 +174,31 @@ def summarise_tokens(recorder: UsageRecorder) -> Dict[str, Any]:
     }
 
 
-def process_one(
+def process_inputs(row: Dict[str, str], out_dir: Path, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    corpus = row["corpus"]
+    record_id = row["record_id"]
+    parser = cfg["grobid"].get("parser", DEFAULT_PARSER)
+    paths = _benchmark_paths(row, out_dir, cfg)
+    _ensure_benchmark_dirs(paths)
+
+    try:
+        run_grobid(paths["pdf"], paths["tei"], grobid_url=cfg["grobid"]["url"], parser=parser)
+    except Exception as exc:
+        return {"record_id": record_id, "corpus": corpus, "error": f"grobid: {exc}"}
+
+    try:
+        run_pdfalto(
+            paths["pdf"], paths["alto"],
+            pdfalto_bin=Path(os.environ.get("PDFALTO_BIN", "pdfalto")),
+            start_page=cfg["grobid"]["pdfalto_start_page"],
+            end_page=cfg["grobid"]["pdfalto_end_page"],
+        )
+    except Exception as exc:
+        return {"record_id": record_id, "corpus": corpus, "error": f"pdfalto: {exc}"}
+    return None
+
+
+def process_prediction(
     row: Dict[str, str],
     make_chat_fn: Callable[[UsageRecorder], Callable[..., str]],
     out_dir: Path,
@@ -158,42 +206,16 @@ def process_one(
 ) -> Optional[Dict[str, Any]]:
     corpus = row["corpus"]
     record_id = row["record_id"]
-    pdf_path = Path(row["pdf_path"])
-    xml_path = Path(row["xml_path"])
+    paths = _benchmark_paths(row, out_dir, cfg)
+    _ensure_benchmark_dirs(paths)
     recorder = UsageRecorder()
     chat = make_chat_fn(recorder)
 
-    parser = cfg["grobid"].get("parser", DEFAULT_PARSER)
-    corpus_out = out_dir / corpus
-    # TEI and per-doc predictions are namespaced by parser so a follow-up
-    # run with the other backend does not silently re-use the first run's
-    # cached outputs. ALTO is parser-independent (pdfalto on the raw PDF).
-    tei_path = corpus_out / "tei" / parser / f"{record_id}.tei.xml"
-    alto_path = corpus_out / "alto" / f"{record_id}.alto.xml"
-    pred_path = corpus_out / "predictions" / parser / f"{record_id}.json"
-    for p in (tei_path, alto_path, pred_path):
-        p.parent.mkdir(parents=True, exist_ok=True)
-
     try:
-        run_grobid(pdf_path, tei_path, grobid_url=cfg["grobid"]["url"], parser=parser)
-    except Exception as exc:
-        return {"record_id": record_id, "corpus": corpus, "error": f"grobid: {exc}"}
-
-    try:
-        run_pdfalto(
-            pdf_path, alto_path,
-            pdfalto_bin=Path(os.environ.get("PDFALTO_BIN", "pdfalto")),
-            start_page=cfg["grobid"]["pdfalto_start_page"],
-            end_page=cfg["grobid"]["pdfalto_end_page"],
-        )
-    except Exception as exc:
-        return {"record_id": record_id, "corpus": corpus, "error": f"pdfalto: {exc}"}
-
-    try:
-        lines = extract_alto_lines(alto_path)
-        header_text = read_tei_header(tei_path)
-        tei_fields = extract_tei_fields(tei_path)
-        tei_abstracts = [normalize_whitespace(t) for t in extract_tei_abstracts(tei_path)]
+        lines = extract_alto_lines(paths["alto"])
+        header_text = read_tei_header(paths["tei"])
+        tei_fields = extract_tei_fields(paths["tei"])
+        tei_abstracts = [normalize_whitespace(t) for t in extract_tei_abstracts(paths["tei"])]
         context = DocumentContext(
             record_id=record_id, header_text=header_text, lines=lines,
             first_page_lines=[line for line in lines if line.get("page", 0) == 0],
@@ -204,7 +226,7 @@ def process_one(
         # refs) for the corpora whose gold can score content.
         grobid_pred = normalize_metadata(tei_fields)
         if corpus in _CONTENT_CORPORA:
-            tei_content = extract_tei_content_fields(tei_path)
+            tei_content = extract_tei_content_fields(paths["tei"])
             grobid_pred = {**grobid_pred, **tei_content}
         else:
             tei_content = {}
@@ -212,8 +234,8 @@ def process_one(
         # LLM pred = build_prediction + (on content corpora) merged TEI/LLM content
         # + Crossref-enriched references. header and content stages share no inputs
         # and run concurrently; crossref enrichment depends on the merged pred.
-        if pred_path.exists() and pred_path.stat().st_size > 0:
-            llm_pred = json.loads(pred_path.read_text(encoding="utf-8"))
+        if paths["prediction"].exists() and paths["prediction"].stat().st_size > 0:
+            llm_pred = json.loads(paths["prediction"].read_text(encoding="utf-8"))
         else:
             workers = cfg["llm"]["workers"]
             with ThreadPoolExecutor(max_workers=2) as _stage_ex:
@@ -226,13 +248,13 @@ def process_one(
                 if content_fut is not None:
                     llm_content = content_fut.result()
                     llm_pred = {**llm_pred, **merge_content_fields(tei_content, llm_content)}
-                    llm_pred = enrich_references_with_crossref(llm_pred, tei_path)
-            pred_path.write_text(json.dumps(llm_pred, ensure_ascii=True, indent=2), encoding="utf-8")
+                    llm_pred = enrich_references_with_crossref(llm_pred, paths["tei"])
+            paths["prediction"].write_text(json.dumps(llm_pred, ensure_ascii=True, indent=2), encoding="utf-8")
     except Exception as exc:
         return {"record_id": record_id, "corpus": corpus, "error": f"extraction: {exc}"}
 
     try:
-        gold = extract_gold(corpus, xml_path)
+        gold = extract_gold(corpus, paths["xml"])
     except Exception as exc:
         return {"record_id": record_id, "corpus": corpus, "error": f"gold: {exc}"}
 
@@ -245,6 +267,18 @@ def process_one(
         "grobid_pred": grobid_pred, "llm_pred": llm_pred, "gold": gold,
         "tokens": summarise_tokens(recorder),
     }
+
+
+def process_one(
+    row: Dict[str, str],
+    make_chat_fn: Callable[[UsageRecorder], Callable[..., str]],
+    out_dir: Path,
+    cfg: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    input_error = process_inputs(row, out_dir, cfg)
+    if input_error:
+        return input_error
+    return process_prediction(row, make_chat_fn, out_dir, cfg)
 
 
 def main() -> None:
@@ -305,7 +339,7 @@ def main() -> None:
             base_url=DEFAULT_OPENAI_BASE_URL,
         )
     else:
-        client = AoaiPool(args.pool_path)
+        client = AoaiPool(args.pool_path, routing=cfg["llm"].get("routing"))
     semaphore = threading.Semaphore(cfg["llm"]["concurrency"])
 
     def make_chat_fn(recorder: UsageRecorder) -> Callable[..., str]:
@@ -330,9 +364,39 @@ def main() -> None:
 
     errors = []
     t0 = time.time()
-    with out_jsonl.open("a", encoding="utf-8") as f:
-        with ThreadPoolExecutor(max_workers=cfg.get("doc_concurrency", 4)) as ex:
-            futures = {ex.submit(process_one, row, make_chat_fn, args.out, cfg): row for row in manifest}
+
+    def _write_prediction_result(
+        result: Optional[Dict[str, Any]],
+        row: Dict[str, str],
+        done: int,
+        total: int,
+        handle: Any,
+    ) -> None:
+        if result and "error" in result:
+            errors.append(result)
+            print(
+                f"  [{done}/{total}] {row['corpus']} {row['record_id'][:35]} "
+                f"ERROR: {result['error'][:80]}",
+                flush=True,
+            )
+        elif result:
+            handle.write(json.dumps(result, ensure_ascii=True, default=str) + "\n")
+            handle.flush()
+            gm = result["grobid_metrics"]
+            lm = result["llm_metrics"]
+            print(
+                f"  [{done}/{total}] {row['corpus']} {row['record_id'][:35]} "
+                f"grobid_title={gm.get('title_match', 0):.2f} "
+                f"llm_title={lm.get('title_match', 0):.2f}",
+                flush=True,
+            )
+
+    if "parse_concurrency" in cfg or "llm_doc_concurrency" in cfg:
+        parse_concurrency = int(cfg.get("parse_concurrency", cfg.get("doc_concurrency", 4)))
+        llm_doc_concurrency = int(cfg.get("llm_doc_concurrency", cfg.get("doc_concurrency", 4)))
+        ready_rows: List[Dict[str, str]] = []
+        with ThreadPoolExecutor(max_workers=max(1, parse_concurrency)) as ex:
+            futures = {ex.submit(process_inputs, row, args.out, cfg): row for row in manifest}
             done = 0
             for fut in as_completed(futures):
                 row = futures[fut]
@@ -342,23 +406,40 @@ def main() -> None:
                     if result and "error" in result:
                         errors.append(result)
                         print(
-                            f"  [{done}/{len(manifest)}] {row['corpus']} {row['record_id'][:35]} "
+                            f"  parse [{done}/{len(manifest)}] {row['corpus']} {row['record_id'][:35]} "
                             f"ERROR: {result['error'][:80]}",
                             flush=True,
                         )
-                    elif result:
-                        f.write(json.dumps(result, ensure_ascii=True, default=str) + "\n")
-                        f.flush()
-                        gm = result["grobid_metrics"]
-                        lm = result["llm_metrics"]
-                        print(
-                            f"  [{done}/{len(manifest)}] {row['corpus']} {row['record_id'][:35]} "
-                            f"grobid_title={gm.get('title_match', 0):.2f} "
-                            f"llm_title={lm.get('title_match', 0):.2f}",
-                            flush=True,
-                        )
+                    else:
+                        ready_rows.append(row)
                 except Exception as exc:
                     errors.append({"record_id": row["record_id"], "corpus": row["corpus"], "error": str(exc)})
+
+        with out_jsonl.open("a", encoding="utf-8") as f:
+            with ThreadPoolExecutor(max_workers=max(1, llm_doc_concurrency)) as ex:
+                futures = {
+                    ex.submit(process_prediction, row, make_chat_fn, args.out, cfg): row for row in ready_rows
+                }
+                done = 0
+                for fut in as_completed(futures):
+                    row = futures[fut]
+                    done += 1
+                    try:
+                        _write_prediction_result(fut.result(), row, done, len(ready_rows), f)
+                    except Exception as exc:
+                        errors.append({"record_id": row["record_id"], "corpus": row["corpus"], "error": str(exc)})
+    else:
+        with out_jsonl.open("a", encoding="utf-8") as f:
+            with ThreadPoolExecutor(max_workers=cfg.get("doc_concurrency", 4)) as ex:
+                futures = {ex.submit(process_one, row, make_chat_fn, args.out, cfg): row for row in manifest}
+                done = 0
+                for fut in as_completed(futures):
+                    row = futures[fut]
+                    done += 1
+                    try:
+                        _write_prediction_result(fut.result(), row, done, len(manifest), f)
+                    except Exception as exc:
+                        errors.append({"record_id": row["record_id"], "corpus": row["corpus"], "error": str(exc)})
 
     elapsed = time.time() - t0
     (args.out / "errors.json").write_text(json.dumps(errors, indent=2, default=str), encoding="utf-8")
@@ -401,7 +482,14 @@ def main() -> None:
         "n_errors": len(errors),
         "elapsed_s": round(elapsed, 1),
         "git_commit": os.environ.get("GITHUB_SHA", _git_sha()),
-        "llm": {"temperature": cfg["llm"]["temperature"], "max_tokens": cfg["llm"]["max_tokens"]},
+        "llm": {
+            "temperature": cfg["llm"]["temperature"],
+            "max_tokens": cfg["llm"]["max_tokens"],
+            "workers": cfg["llm"].get("workers"),
+            "concurrency": cfg["llm"].get("concurrency"),
+            "routing": cfg["llm"].get("routing") or os.getenv("AOAI_POOL_ROUTING", "round_robin"),
+            "doc_concurrency": cfg.get("llm_doc_concurrency", cfg.get("doc_concurrency", 4)),
+        },
         "tokens_total": tokens_total_out,
         "tokens_by_stage": tokens_by_stage,
         "tokens_by_metric_group": tokens_by_group,
