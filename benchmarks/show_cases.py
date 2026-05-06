@@ -173,6 +173,10 @@ def _export_record(
     if pred_src.exists():
         shutil.copy(pred_src, out_dir / f"{record_id}.prediction.json")
 
+    (out_dir / f"{record_id}.record.json").write_text(
+        json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
     gold_val = (r.get("gold") or {}).get(field)
     val_b = (r.get(system_b_pred) or {}).get(field)
     val_a = (r.get(system_a_pred) or {}).get(field)

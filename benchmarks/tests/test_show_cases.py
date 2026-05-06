@@ -220,6 +220,16 @@ class TestExportRecord:
         out = self._out_dir(tmp_path, "improvement", "title_edit_sim", "ore")
         assert (out / "doc1.tei.xml").read_text() == "<TEI custom/>"
 
+    def test_writes_full_record_json(self, tmp_path: Path) -> None:
+        r = _make_record(record_id="doc1", corpus="ore")
+        _export_record(r, tmp_path, "title_edit_sim", "title", "improvement", "llm_pred", "grobid_pred")
+        out = self._out_dir(tmp_path, "improvement", "title_edit_sim", "ore")
+        saved = json.loads((out / "doc1.record.json").read_text())
+        assert saved["record_id"] == "doc1"
+        assert saved["gold"] == r["gold"]
+        assert saved["grobid_pred"] == r["grobid_pred"]
+        assert saved["llm_pred"] == r["llm_pred"]
+
     def test_copies_prediction_json_when_present(self, tmp_path: Path) -> None:
         r = _make_record(record_id="doc1", corpus="ore")
         pred_dir = tmp_path / "ore" / "predictions" / "grobid"
