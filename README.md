@@ -14,6 +14,7 @@ A pipeline that takes a scientific paper PDF (plus optional OAI-DC or JATS XML) 
 - [Benchmarking](#benchmarking)
   - [Cross-parser comparison](#cross-parser-comparison)
   - [Training-set benchmark (local only)](#training-set-benchmark-local-only)
+  - [Inspecting regressions and improvements](#inspecting-regressions-and-improvements)
 - [LLM observability](#llm-observability)
 - [Notes](#notes)
 
@@ -30,7 +31,7 @@ A pipeline that takes a scientific paper PDF (plus optional OAI-DC or JATS XML) 
 5. **Content extraction** (LLM, 3 parallel passes) — extract body sections, figure captions, and table captions from the full-document ALTO text. Three non-overlapping windows (head / middle / tail) run concurrently to reduce wall time.
 6. **Reference enrichment** (Crossref API, no LLM) — for every reference Grobid found with a title but no DOI, look up the DOI via Crossref (Jaccard-thresholded match, up to 80 lookups, 5 parallel).
 7. **SciELO identifiers** — derive DOI and SciELO URL deterministically from the record ID.
-8. **Evaluation** — compare predictions against the gold XML and emit per-field recall/match scores. Gated metrics (body section recall, figure/table caption recall, reference recall) only appear when the corresponding gold key exists.
+8. **Evaluation** — compare predictions against the gold XML and emit per-field precision / recall / F1 (plus exact-match and edit-similarity where applicable). Content metrics (body sections, figure/table captions, references) are gated on the prediction being non-empty, so corpora where a stage didn't run don't drag the average down.
 
 Exposed as a **FastAPI service** (primary usage) and as a **CLI batch processor**.
 
@@ -239,9 +240,24 @@ Outputs land in `benchmarks/runs/<BENCHMARK_RUN>-grobid/` and `benchmarks/runs/<
 To benchmark on the training split without polluting the validation split used by CI:
 
 ```bash
-make benchmark-train                     # build + predict + score
-make benchmark-train BENCHMARK_MODE=full
+make benchmark-train-grobid                      # build + predict + score
+make benchmark-train-grobid BENCHMARK_MODE=full
+make benchmark-train-rescore-grobid              # drop per_document.jsonl + re-predict + re-score
 ```
+
+Outputs land in `benchmarks/runs/train/<BENCHMARK_RUN>-grobid/` (default: `benchmarks/runs/train/local-grobid/`).
+
+### Inspecting regressions and improvements
+
+After a training-set run, list the records that moved most on a given metric:
+
+```bash
+make show-regressions  SHOW_METRIC=abstract_edit_sim SHOW_CORPUS=ore
+make show-improvements SHOW_METRIC=title_match       SHOW_CORPUS=biorxiv
+make show-regressions  SHOW_METRIC=authors_f1 SHOW_CORPUS=scielo SHOW_RUN=train/local-grobid
+```
+
+`SHOW_RUN` defaults to `train/local-grobid`. `SHOW_METRIC` and `SHOW_CORPUS` are required.
 
 ## LLM observability
 
