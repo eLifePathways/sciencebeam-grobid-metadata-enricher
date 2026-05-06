@@ -3360,8 +3360,18 @@ _ALTO_PREFERRED_CONTENT_FIELDS = {
 }
 
 
+_REFERENCE_UNION_FIELDS = {"reference_dois", "reference_titles"}
+
+
 def merge_content_fields(tei_content: MetadataRecord, llm_content: MetadataRecord) -> MetadataRecord:
-    """Prefer ALTO/LLM content_fields; fall back to TEI when the LLM path returned nothing supported."""
+    """Prefer ALTO/LLM content_fields; fall back to TEI when the LLM path returned nothing supported.
+
+    Reference fields (reference_dois, reference_titles) are unioned rather than
+    replaced — GROBID's structural extractor often finds DOIs the LLM stage
+    later drops, and the previous "LLM if non-empty else TEI" rule was costing
+    340 correctly-extracted reference DOIs across a 149-doc smoke (worst case
+    scielo_br/S0101-28002026000200403: TEI 34, LLM 1, dropped 33 of 33 gold).
+    """
     out: MetadataRecord = dict(tei_content)
     for key in ("body_sections", "figure_captions", "table_captions", "reference_titles", "reference_dois"):
         predicate = _CONTENT_FIELD_PREDICATES.get(key)
@@ -3370,7 +3380,9 @@ def merge_content_fields(tei_content: MetadataRecord, llm_content: MetadataRecor
         if predicate is not None:
             tei_items = [i for i in tei_items if predicate(i)]
             llm_items = [i for i in llm_items if predicate(i)]
-        if key in _ALTO_PREFERRED_CONTENT_FIELDS:
+        if key in _REFERENCE_UNION_FIELDS:
+            chosen = tei_items + llm_items
+        elif key in _ALTO_PREFERRED_CONTENT_FIELDS:
             chosen = llm_items if llm_items else tei_items
         else:
             chosen = tei_items if tei_items else llm_items

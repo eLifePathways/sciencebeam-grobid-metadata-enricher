@@ -205,8 +205,10 @@ def test_merge_content_fields_prefers_alto_content_fields_over_tei() -> None:
     assert result["body_sections"] == ["Introduction", "Results", "Discussion"]
     assert result["figure_captions"] == ["Figure 1. ALTO caption"]
     assert result["table_captions"] == ["Table 1. ALTO caption"]
-    assert result["reference_titles"] == ["ALTO cited work"]
-    assert result["reference_dois"] == ["10.1000/alto"]
+    # Reference fields union TEI + LLM rather than replace: GROBID's structured
+    # extraction often catches DOIs the LLM stage drops at the merge step.
+    assert result["reference_titles"] == ["TEI cited work", "ALTO cited work"]
+    assert result["reference_dois"] == ["10.1000/tei", "10.1000/alto"]
 
 
 def test_body_section_candidates_include_normal_weight_gap_separated_headings_after_intro() -> None:

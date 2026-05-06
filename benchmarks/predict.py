@@ -249,6 +249,23 @@ def process_prediction(
                     llm_content = content_fut.result()
                     llm_pred = {**llm_pred, **merge_content_fields(tei_content, llm_content)}
                     llm_pred = enrich_references_with_crossref(llm_pred, paths["tei"])
+                    own_dois = {
+                        d.strip().lower()
+                        for d in (
+                            (llm_pred.get("identifiers") or [])
+                            + (grobid_pred.get("identifiers") or [])
+                        )
+                        if "/" in d
+                    }
+                    if own_dois:
+                        llm_pred["reference_dois"] = [
+                            d for d in (llm_pred.get("reference_dois") or [])
+                            if d.strip().lower() not in own_dois
+                        ]
+                        grobid_pred["reference_dois"] = [
+                            d for d in (grobid_pred.get("reference_dois") or [])
+                            if d.strip().lower() not in own_dois
+                        ]
             paths["prediction"].write_text(json.dumps(llm_pred, ensure_ascii=True, indent=2), encoding="utf-8")
     except Exception as exc:
         return {"record_id": record_id, "corpus": corpus, "error": f"extraction: {exc}"}

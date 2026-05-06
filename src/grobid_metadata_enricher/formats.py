@@ -1044,16 +1044,43 @@ def extract_tei_content_fields(tei_path: Path) -> MetadataRecord:
 
     reference_dois: List[str] = []
     reference_titles: List[str] = []
+    doi_re = re.compile(r"\b10\.\d{4,9}/[^\s\)\]\>;,\"']+", re.IGNORECASE)
+    source_desc_bibls: set = set()
+    for source_desc in root.iter():
+        if strip_ns(source_desc.tag) != "sourceDesc":
+            continue
+        for bibl in source_desc.iter():
+            if strip_ns(bibl.tag) == "biblStruct":
+                source_desc_bibls.add(id(bibl))
     for bibl in root.iter():
         if strip_ns(bibl.tag) != "biblStruct":
             continue
+        if id(bibl) in source_desc_bibls:
+            continue
+        got_doi = False
         for inner in bibl.iter():
             tag = strip_ns(inner.tag)
             if tag == "idno" and (inner.get("type") or "").lower() == "doi":
                 value = collect_text(inner)
                 if value:
                     reference_dois.append(value)
+                    got_doi = True
                     break
+        if not got_doi:
+            for inner in bibl.iter():
+                if strip_ns(inner.tag) != "ptr":
+                    continue
+                target = inner.get("target") or ""
+                m = doi_re.search(target)
+                if m:
+                    reference_dois.append(m.group(0).rstrip(".,;:)"))
+                    got_doi = True
+                    break
+        if not got_doi:
+            text = " ".join(t.strip() for t in bibl.itertext() if t and t.strip())
+            m = doi_re.search(text)
+            if m:
+                reference_dois.append(m.group(0).rstrip(".,;:)"))
         for inner in bibl.iter():
             if strip_ns(inner.tag) != "title":
                 continue
