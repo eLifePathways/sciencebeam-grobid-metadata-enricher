@@ -1,9 +1,10 @@
+# pylint: disable=unused-argument
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable, Dict
 
-import benchmarks.predict as predict
+from benchmarks import predict
 
 
 def _row(tmp_path: Path) -> Dict[str, str]:

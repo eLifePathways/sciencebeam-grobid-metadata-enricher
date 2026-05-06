@@ -1,3 +1,4 @@
+# pylint: disable=line-too-long,unused-argument,duplicate-code
 from __future__ import annotations
 
 import json

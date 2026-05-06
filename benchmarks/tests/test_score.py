@@ -48,7 +48,7 @@ def test_benchmark_configs_use_f1_for_over_extraction_sensitive_metrics() -> Non
     for path in CONFIG_PATHS:
         metrics = set(yaml.safe_load(path.read_text(encoding="utf-8"))["metrics"])
         assert F1_PRIMARY_METRICS <= metrics
-        assert not (RECALL_PRIMARY_REPLACEMENTS & metrics)
+        assert not RECALL_PRIMARY_REPLACEMENTS & metrics
 
 
 def test_identical_runs_wilcoxon_p_is_one() -> None:

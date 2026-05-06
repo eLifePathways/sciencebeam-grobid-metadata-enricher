@@ -547,7 +547,7 @@ def split_abstract_language_segments(text: str, min_words: int = 35) -> List[str
             continue
         balance = min(left_words, right_words) / max(left_words, right_words)
         score = balance + (0.25 if right_language == "en" else 0.0) + (0.1 if left_language == "en" else 0.0)
-        if best_split is None or score > best_split[2]:
+        if best_split is None or score > best_split[2]:  # pylint: disable=unsubscriptable-object
             best_split = (left, right, score)
     if best_split:
         candidates.extend([best_split[0], best_split[1]])
@@ -3089,12 +3089,12 @@ def _table_caption_dedupe_add(target: List[str], items: List[str]) -> None:
 def predict_content_fields_from_alto(
     lines: Sequence[LayoutLine],
     chat: Callable[..., str],
-    max_chars: int = 25000,
-    max_tokens: int = 2000,
+    max_chars: int = 25000,  # pylint: disable=unused-argument
+    max_tokens: int = 2000,  # pylint: disable=unused-argument
     body_sections_max_tokens: int = 2500,
     references_max_chars: int = 40000,
     references_max_tokens: int = 4500,
-    tables_figures_max_chars: int = 110000,
+    tables_figures_max_chars: int = 110000,  # pylint: disable=unused-argument
     tables_figures_max_tokens: int = 3500,
 ) -> MetadataRecord:
     strip_body_numbers = _looks_like_bio_medrxiv_layout(lines)

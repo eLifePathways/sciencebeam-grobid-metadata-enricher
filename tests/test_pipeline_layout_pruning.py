@@ -1,3 +1,4 @@
+# pylint: disable=line-too-long,unused-argument,duplicate-code
 from __future__ import annotations
 
 import json
@@ -420,9 +421,9 @@ def test_predict_content_fields_rejects_unsupported_figure_and_reference_llm_out
         tables_figures_max_chars=5000,
     )
 
-    assert result["figure_captions"] == []
-    assert result["reference_titles"] == []
-    assert result["reference_dois"] == []
+    assert not result["figure_captions"]
+    assert not result["reference_titles"]
+    assert not result["reference_dois"]
 
 
 def test_body_section_candidates_do_not_merge_from_prose_into_heading() -> None:
