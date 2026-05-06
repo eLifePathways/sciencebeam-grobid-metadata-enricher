@@ -152,6 +152,7 @@ def _export_record(
     mode: str,
     system_a_pred: str,
     system_b_pred: str,
+    parser: str = "grobid",
 ) -> None:
     record_id = r["record_id"]
     corpus = r["corpus"]
@@ -163,6 +164,10 @@ def _export_record(
         src = data_dir / f"{record_id}.{ext}"
         if src.exists():
             shutil.copy(src, out_dir / f"{record_id}.{ext}")
+
+    tei_src = run_dir / corpus / "tei" / parser / f"{record_id}.tei.xml"
+    if tei_src.exists():
+        shutil.copy(tei_src, out_dir / f"{record_id}.tei.xml")
 
     gold_val = (r.get("gold") or {}).get(field)
     val_b = (r.get(system_b_pred) or {}).get(field)
@@ -213,6 +218,10 @@ def main() -> None:
         help="Prediction key for system-b (default: derived from --system-b)",
     )
     ap.add_argument(
+        "--parser", default="grobid",
+        help="Parser name used to locate TEI files (default: grobid)",
+    )
+    ap.add_argument(
         "--limit", type=int,
         help="Max records to print to console (all cases are always exported to files)",
     )
@@ -249,7 +258,7 @@ def main() -> None:
         _print_record(r, args.metric, field, args.system_a, args.system_b, system_a_pred, system_b_pred)
 
     for r in cases:
-        _export_record(r, run_dir, args.metric, field, args.mode, system_a_pred, system_b_pred)
+        _export_record(r, run_dir, args.metric, field, args.mode, system_a_pred, system_b_pred, args.parser)
 
     corpora = sorted({r["corpus"] for r in cases})
     if corpora:
