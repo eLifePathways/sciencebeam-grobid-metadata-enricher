@@ -54,13 +54,12 @@ seeds:
 metrics:
   - title_match
   - title_edit_sim
-  - authors_recall
   - abstract_f1
   - abstract_edit_sim
   - keywords_f1
   - language_match
   - identifiers_f1
-  # Gated on the corresponding gold keys; silent for biorxiv / scielo_preprints.
+  # Gated on (gold has field) AND (pipeline actually extracted the field for this corpus).
   - body_section_f1
   - figure_caption_f1
   - table_caption_f1

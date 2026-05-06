@@ -299,18 +299,22 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
     _assign_pr(metrics, "identifiers",
                _identifier_pr(gold.get("identifiers") or [], predicted.get("identifiers") or []))
 
-    if "body_sections" in gold:
+    if "body_sections" in gold and "body_sections" in predicted:
         _assign_pr(metrics, "body_section",
                    _section_head_pr(gold.get("body_sections") or [], predicted.get("body_sections") or []))
-    if "figure_captions" in gold:
+    if "figure_captions" in gold and "figure_captions" in predicted:
         _assign_pr(metrics, "figure_caption",
                    _caption_set_pr(gold.get("figure_captions") or [], predicted.get("figure_captions") or []))
-    if "table_captions" in gold:
+    if "table_captions" in gold and "table_captions" in predicted:
         _assign_pr(metrics, "table_caption",
                    _caption_set_pr(gold.get("table_captions") or [], predicted.get("table_captions") or []))
-    if "reference_dois" in gold or "reference_titles" in gold:
+    if ("reference_dois" in gold or "reference_titles" in gold) and (
+        "reference_titles" in predicted or "reference_dois" in predicted
+    ):
         _assign_pr(metrics, "reference", _reference_pr(gold, predicted))
-    if "reference_records" in gold:
+    if "reference_records" in gold and (
+        "reference_titles" in predicted or "reference_dois" in predicted
+    ):
         _assign_pr(metrics, "reference_combined", _reference_combined_pr(gold, predicted))
     return metrics
 
