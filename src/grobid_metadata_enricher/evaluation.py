@@ -11,8 +11,19 @@ PRTriple = Tuple[Optional[float], Optional[float], Optional[float]]
 WORD_RE = re.compile(r"[A-Za-z0-9]+", re.UNICODE)
 
 
+_MOJIBAKE_RE = re.compile(r"ï¿½|Ã[©¨ª¡´³ñ]|â€[™œ]|Â[°·]")
+
+
+def _strip_mojibake(text: str) -> str:
+    """Replace common UTF-8-as-Latin-1 corruption sequences with a single
+    placeholder. Symmetric: applied to both gold and predicted strings inside
+    set-equality scoring so mojibake-vs-clean-Unicode pairs can still match
+    on their non-corrupted prefix."""
+    return _MOJIBAKE_RE.sub("?", text or "")
+
+
 def normalize_text(text: str) -> str:
-    value = (text or "").strip().lower()
+    value = _strip_mojibake(text or "").strip().lower()
     value = re.sub(r"\s+", " ", value)
     return re.sub(r"[^a-z0-9' ]+", "", value)
 
@@ -80,12 +91,21 @@ def get_max_levenshtein_sim(predicted: str, golds: List[str]) -> float:
     return max(levenshtein_sim(predicted, gold) for gold in golds)
 
 
+_LANGUAGE_ALIASES = {
+    "pt": "por", "por": "por", "pt-br": "por", "ptbr": "por", "po": "por",
+    "en": "eng", "eng": "eng",
+    "es": "spa", "spa": "spa", "sp": "spa",
+    "fr": "fra", "fra": "fra",
+    "de": "deu", "deu": "deu", "ger": "deu",
+    "it": "ita", "ita": "ita",
+}
+
+
 def language_match(gold: str, predicted: str) -> Optional[int]:
     if not gold:
         return None
-    aliases = {"pt": "por", "en": "eng", "es": "spa"}
-    gold_value = aliases.get(normalize_text(gold), normalize_text(gold))
-    predicted_value = aliases.get(normalize_text(predicted), normalize_text(predicted))
+    gold_value = _LANGUAGE_ALIASES.get(normalize_text(gold), normalize_text(gold))
+    predicted_value = _LANGUAGE_ALIASES.get(normalize_text(predicted), normalize_text(predicted))
     if not predicted_value:
         return 0
     return 1 if gold_value == predicted_value else 0
@@ -159,6 +179,19 @@ def _section_head_pr(gold_heads: List[str], pred_heads: List[str], threshold: fl
     )
 
 
+def _caption_match(gold: str, pred: str) -> bool:
+    if normalized_edit_sim(gold, pred) >= 0.75:
+        return True
+    g = normalize_text(gold)
+    p = normalize_text(pred)
+    if not g or not p:
+        return False
+    short, long_ = (g, p) if len(g) <= len(p) else (p, g)
+    if len(short) >= 12 and long_.startswith(short):
+        return len(short) / len(long_) >= 0.4
+    return False
+
+
 def _caption_set_pr(gold_captions: List[str], pred_captions: List[str]) -> PRTriple:
     golds = [c for c in (gold_captions or []) if normalize_text(c)]
     preds = [c for c in (pred_captions or []) if normalize_text(c)]
@@ -167,7 +200,7 @@ def _caption_set_pr(gold_captions: List[str], pred_captions: List[str]) -> PRTri
     return _bipartite_pr(
         len(golds),
         len(preds),
-        lambda gi, pi: normalized_edit_sim(golds[gi], preds[pi]) >= 0.75,
+        lambda gi, pi: _caption_match(golds[gi], preds[pi]),
     )
 
 

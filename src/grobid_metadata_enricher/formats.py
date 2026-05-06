@@ -719,11 +719,14 @@ def extract_tei_fields(tei_path: Path) -> MetadataRecord:
                     break
 
     authors: List[str] = []
-    for element in header.iter():
-        if strip_ns(element.tag) == "persName":
-            name = collect_text(element)
-            if name:
-                authors.append(name)
+    for author_el in header.iter():
+        if strip_ns(author_el.tag) != "author":
+            continue
+        for element in author_el.iter():
+            if strip_ns(element.tag) == "persName":
+                name = collect_text(element)
+                if name:
+                    authors.append(name)
 
     abstract = ""
     for element in header.iter():
