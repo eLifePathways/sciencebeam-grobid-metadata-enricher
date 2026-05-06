@@ -1,12 +1,39 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
+import yaml
 
 from benchmarks.score import render_markdown, score
 
 METRICS = ["title_match", "authors_recall"]
 CFG_N_RESAMPLES = 200
 CFG_CL = 0.95
+CONFIG_PATHS = [
+    Path("benchmarks/bench.yaml"),
+    Path("benchmarks/bench-train.yaml"),
+]
+F1_PRIMARY_METRICS = {
+    "abstract_f1",
+    "keywords_f1",
+    "identifiers_f1",
+    "body_section_f1",
+    "figure_caption_f1",
+    "table_caption_f1",
+    "reference_f1",
+    "reference_combined_f1",
+}
+RECALL_PRIMARY_REPLACEMENTS = {
+    "abstract_recall",
+    "keywords_recall",
+    "identifiers_recall",
+    "body_section_recall",
+    "figure_caption_recall",
+    "table_caption_recall",
+    "reference_recall",
+    "reference_recall_combined",
+}
 
 
 def _row(corpus: str, rid: str, grobid: tuple, llm: tuple) -> dict:
@@ -15,6 +42,13 @@ def _row(corpus: str, rid: str, grobid: tuple, llm: tuple) -> dict:
         "grobid_metrics": {"title_match": grobid[0], "authors_recall": grobid[1]},
         "llm_metrics":    {"title_match": llm[0],    "authors_recall": llm[1]},
     }
+
+
+def test_benchmark_configs_use_f1_for_over_extraction_sensitive_metrics() -> None:
+    for path in CONFIG_PATHS:
+        metrics = set(yaml.safe_load(path.read_text(encoding="utf-8"))["metrics"])
+        assert F1_PRIMARY_METRICS <= metrics
+        assert not (RECALL_PRIMARY_REPLACEMENTS & metrics)
 
 
 def test_identical_runs_wilcoxon_p_is_one() -> None:

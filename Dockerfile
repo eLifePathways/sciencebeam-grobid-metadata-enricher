@@ -13,9 +13,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=grobid /opt/grobid/grobid-home/pdfalto/ /opt/pdfalto/
-RUN chmod +x /opt/pdfalto/lin-64/pdfalto
+RUN set -eux; \
+    if [ -x /opt/pdfalto/lin-64/pdfalto ]; then \
+        pdfalto_path=/opt/pdfalto/lin-64/pdfalto; \
+    elif [ -x /opt/pdfalto/lin_arm-64/pdfalto ]; then \
+        pdfalto_path=/opt/pdfalto/lin_arm-64/pdfalto; \
+    else \
+        find /opt/pdfalto -maxdepth 3 -type f -name pdfalto -print; \
+        exit 1; \
+    fi; \
+    chmod +x "$pdfalto_path"; \
+    ln -sf "$pdfalto_path" /usr/local/bin/pdfalto
 
-ENV PDFALTO_BIN=/opt/pdfalto/lin-64/pdfalto
+ENV PDFALTO_BIN=/usr/local/bin/pdfalto
 ENV PYTHONUNBUFFERED=1
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv

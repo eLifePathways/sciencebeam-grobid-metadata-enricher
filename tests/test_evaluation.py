@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from grobid_metadata_enricher.evaluation import evaluate_record, levenshtein_sim
+from grobid_metadata_enricher.evaluation import evaluate_record, levenshtein_sim, normalized_edit_sim
 
 
 class TestLevenshteinSim:
@@ -31,7 +31,7 @@ class TestLevenshteinSim:
 
     def test_extra_predicted_text_penalised(self) -> None:
         gold = "short abstract"
-        # jaccard_recall would score 1.0 here; levenshtein_sim should not
+        # Token-recall style metrics would score 1.0 here; edit similarity should not.
         predicted = "short abstract with a lot of extra words appended by the model"
         sim = levenshtein_sim(gold, predicted)
         assert sim < 1.0
@@ -47,8 +47,7 @@ class TestEvaluateRecordEditSim:
         predicted = "short abstract with a lot of extra words appended"
         metrics = evaluate_record({"abstract": predicted}, {"abstract": gold})
         assert metrics["abstract_edit_sim"] < 1.0
-        # abstract_recall (jaccard recall) scores 1.0 for the same input — showing the difference
-        assert metrics["abstract_recall"] == pytest.approx(1.0)
+        assert metrics["abstract_recall"] == pytest.approx(normalized_edit_sim(gold, predicted))
 
     def test_multi_candidate_takes_max(self) -> None:
         predicted = "the correct abstract text"
@@ -83,9 +82,10 @@ class TestF1Metrics:
         gold = "short abstract"
         pred = "short abstract with a lot of extra"
         m = evaluate_record({"abstract": pred}, {"abstract": gold})
-        assert m["abstract_recall"] == pytest.approx(1.0)
-        assert m["abstract_precision"] == pytest.approx(2/7)
-        assert m["abstract_f1"] == pytest.approx(2 * 1.0 * (2/7) / (1.0 + 2/7))
+        expected = normalized_edit_sim(gold, pred)
+        assert m["abstract_recall"] == pytest.approx(expected)
+        assert m["abstract_precision"] == pytest.approx(expected)
+        assert m["abstract_f1"] == pytest.approx(expected)
 
     def test_keywords_f1(self) -> None:
         m = evaluate_record(
@@ -104,6 +104,13 @@ class TestF1Metrics:
         assert m["identifiers_recall"] == pytest.approx(1.0)
         assert m["identifiers_precision"] == pytest.approx(1/3)
         assert m["identifiers_f1"] == pytest.approx(0.5)
+
+    def test_identifier_f1_ignores_doi_linebreak_spaces(self) -> None:
+        m = evaluate_record(
+            {"identifiers": ["10.1590/s1679-49742021000300023"]},
+            {"identifiers": ["10.1590/s1679- 49742021000300023"]},
+        )
+        assert m["identifiers_f1"] == pytest.approx(1.0)
 
     def test_empty_pred_yields_zero_precision_and_f1(self) -> None:
         m = evaluate_record({"keywords": []}, {"keywords": ["alpha"]})
@@ -125,3 +132,24 @@ class TestF1Metrics:
         assert m["body_section_recall"] == pytest.approx(1.0)
         assert m["body_section_precision"] == pytest.approx(0.5)
         assert m["body_section_f1"] == pytest.approx(2/3)
+
+    def test_section_head_matching_uses_edit_similarity(self) -> None:
+        m = evaluate_record(
+            {"body_sections": ["gamma beta alpha"]},
+            {"body_sections": ["alpha beta gamma"]},
+        )
+        assert m["body_section_f1"] == pytest.approx(0.0)
+
+    def test_caption_matching_uses_edit_similarity(self) -> None:
+        m = evaluate_record(
+            {"figure_captions": ["Figure 1. delta gamma beta alpha"]},
+            {"figure_captions": ["Figure 1. alpha beta gamma delta"]},
+        )
+        assert m["figure_caption_f1"] == pytest.approx(0.0)
+
+    def test_reference_combined_title_matching_uses_edit_similarity(self) -> None:
+        m = evaluate_record(
+            {"reference_titles": ["delta gamma beta alpha"]},
+            {"reference_records": [{"title": "alpha beta gamma delta", "doi": ""}]},
+        )
+        assert m["reference_combined_f1"] == pytest.approx(0.0)

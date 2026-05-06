@@ -9,6 +9,7 @@ import pytest
 from grobid_metadata_enricher.clients import (
     PARSER_GROBID,
     PARSER_SCIENCEBEAM,
+    AoaiPool,
     run_grobid,
 )
 
@@ -154,3 +155,44 @@ class TestRunGrobid:
                     parser=PARSER_SCIENCEBEAM,
                 )
         assert not tei_path.exists()
+
+
+class TestAoaiPoolRouting:
+    def _pool_path(self, tmp_path: Path) -> Path:
+        pool_path = tmp_path / "pool.json"
+        pool_path.write_text(
+            """
+            [
+              {"id":"b0","endpoint":"https://b0/","deployment":"d","apiKey":"k","apiVersion":"v1"},
+              {"id":"b1","endpoint":"https://b1/","deployment":"d","apiKey":"k","apiVersion":"v1"},
+              {"id":"b2","endpoint":"https://b2/","deployment":"d","apiKey":"k","apiVersion":"v1"}
+            ]
+            """,
+            encoding="utf-8",
+        )
+        return pool_path
+
+    def test_round_robin_routing_is_order_sensitive(self, tmp_path: Path) -> None:
+        pool_path = self._pool_path(tmp_path)
+        target_if_first = AoaiPool(pool_path).next_backend().backend_id
+        pool = AoaiPool(pool_path)
+        pool.next_backend()
+        target_if_second = pool.next_backend().backend_id
+
+        assert target_if_first == "b0"
+        assert target_if_second == "b1"
+
+    def test_stable_routing_ignores_unrelated_round_robin_calls(self, tmp_path: Path) -> None:
+        pool = AoaiPool(self._pool_path(tmp_path), routing="stable")
+        messages = [{"role": "user", "content": "same prompt"}]
+        expected = pool.backend_for_request(messages, step_name="HEADER_METADATA").backend_id
+
+        for _ in range(10):
+            pool.next_backend()
+
+        assert pool.backend_for_request(messages, step_name="HEADER_METADATA").backend_id == expected
+        assert pool.backend_for_request(messages, step_name="HEADER_METADATA", attempt=1).backend_id != expected
+
+    def test_rejects_unknown_routing(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="Unsupported AOAI pool routing"):
+            AoaiPool(self._pool_path(tmp_path), routing="random")

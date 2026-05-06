@@ -46,40 +46,106 @@ KEYWORD_TRANSLATION_PROMPT = (
     "Only include requested languages."
 )
 
-CONTENT_EXTRACTION_PROMPT = (
-    "Extract the structured content of this scientific article from the PDF layout text below. "
-    "Use ONLY the supplied text; do not invent anything. "
-    "Return JSON with these fields: "
-    "body_sections (list of section heading strings in reading order, e.g. 'Introduction', 'Methods', 'Results'); "
-    "figure_captions (list of figure caption strings, one per figure, including the 'Figure N.' label); "
-    "table_captions (list of table caption strings, one per table, including the 'Table N.' label); "
-    "reference_titles (list of article titles cited in the reference list, one per reference). "
-    "Omit any field that the text does not support. Keep each list ordered as items appear in the document. "
-    'Return JSON only: '
-    '{"body_sections": [...], "figure_captions": [...], "table_captions": [...], "reference_titles": [...]}.'
+IDENTIFIER_SELECTION_PROMPT = (
+    "Select the persistent identifiers (DOIs, PMIDs, PMCIDs, arXiv IDs, article URLs) "
+    "of THIS scientific article from the supplied candidate identifier lists and front-matter lines. "
+    "Use the title and the record_id as additional context to pick the article's own identifiers, "
+    "not those of cited references, journals, books, authors, or reviewers. "
+    "Treat record_id-derived candidates as lower-confidence fallback identifiers. "
+    "Reject author ORCIDs, reviewer IDs, journal ISSN, book ISBN, grant IDs, hash-like values, "
+    "and DOIs or URLs that belong to cited references or other articles. "
+    'Return JSON only: {"identifiers": ["..."]}.'
+)
+
+BODY_SECTIONS_EXTRACTION_PROMPT = (
+    "Select the article's JATS-style body section titles from the supplied ALTO candidate lines. "
+    "The candidates are already layout-filtered and begin at the body of the paper. "
+    "Be exhaustive: keep main sections, subsection headings, method subheadings, and unnumbered headings "
+    "in document order. Do not collapse the list to only Introduction/Methods/Results/Discussion. "
+    "Select headings from the author's narrative section hierarchy, not every bold or separated line. "
+    "When the candidate list is noisy, prefer candidates that fit a coherent numbered hierarchy, repeated "
+    "heading style, or an unnumbered heading followed by paragraph text. "
+    "Keep numbered heading prefixes exactly when they appear, such as '1 Introduction' or '2.1 Methods'; "
+    "omit only standalone numbering with no heading text. "
+    "Keep body-level administrative or availability sections such as Plain language summary, Ethics and consent, "
+    "Data availability, Underlying data, Extended data, and Supporting information when they appear as section titles. "
+    "Use only candidate line text; do not invent headings. "
+    "Reject article title, authors, affiliations, abstract/keywords labels, page headers or footers, "
+    "figure captions, figure panel labels, table captions, table cells, reference list entries, "
+    "numbered procedure/checklist items, table row or column labels, glossary/list labels, "
+    "reviewer-report text, statistical-result labels, isolated emphasized phrases inside paragraphs, "
+    "and prose sentences that are not headings. "
+    "Use following_text only to decide whether the candidate starts a section; "
+    "do not copy following_text as a heading. "
+    "Copy the selected heading text exactly as it appears after 'candidate:', except omit pure numbering only. "
+    'Return JSON only: {"body_sections": ["Introduction", "..."]}.'
 )
 
 REFERENCES_EXTRACTION_PROMPT = (
-    "Extract every bibliographic reference listed in the text below. "
-    "The text is the reference list or end-of-document text of a scientific paper. "
+    "Extract every bibliographic reference listed in the supplied ALTO reference candidate entries. "
+    "The candidates are already bounded to the reference-list region of a scientific paper. "
     "For each distinct numbered or unnumbered reference, return the article or chapter or book title as a string. "
     "Do not include author names, journal, year, or page numbers. Return titles only. "
     "Preserve the order the references appear. "
     "Be exhaustive; there may be 30 or more references and all of them should be returned. "
     "If you see a DOI next to a reference, also include it. "
-    "Do not invent; only return what the text contains. "
+    "Do not invent; only return titles and DOIs supported by the supplied candidate entries. "
     'Return JSON only: {"references": [{"title": "...", "doi": "..."}]}.'
 )
 
-TABLES_FIGURES_EXTRACTION_PROMPT = (
-    "Extract every table caption and figure caption from the scientific paper text below. "
-    "The text is the PDF layout and may contain headers, footers, body paragraphs, "
-    "figure captions, table captions, and table cells. "
-    "A table caption usually begins with 'Table N' or 'Tabla N' or 'Tabela N' where N is a number. "
-    "A figure caption usually begins with 'Figure N', 'Fig. N', or 'Figura N'. "
-    "Be exhaustive; a paper can contain 10 or more tables and 10 or more figures. "
-    "Return the full caption text (label plus description), in document order. "
-    "Do not include table cell content, only the caption that describes the table or figure. "
-    "Do not invent captions; only return what the text contains. "
-    'Return JSON only: {"tables": ["Table 1. ...", ...], "figures": ["Figure 1. ...", ...]}.'
+FIGURE_CAPTIONS_SELECTION_PROMPT = (
+    "Select the true figure captions from the supplied ALTO candidate list. "
+    "Each candidate starts with a figure label such as Figure 1, Fig. 1, Figura 1, or Esquema 1, "
+    "and may include continuation lines joined from the PDF layout. "
+    "Keep only captions that describe an actual figure, panel, diagram, scheme, or supplementary figure. "
+    "Reject in-text figure references, standalone panel labels, body prose, table captions, table cells, "
+    "page headers, and footers. "
+    "Return the full caption text exactly from the candidate after the separator, preserving the figure label. "
+    "Be exhaustive and keep document order. "
+    'Return JSON only: {"figures": ["Figure 1. ...", "Fig. S1. ..."]}.'
+)
+
+TABLE_CAPTIONS_SELECTION_PROMPT = (
+    "Select the true table captions from the supplied ALTO candidate list. "
+    "Each candidate starts with a table label such as Table 1, Table S1, Tabla 1, or Tabela 1, "
+    "and may include continuation lines joined from the PDF layout. "
+    "Keep only captions that describe an actual table in the article or supplementary material. "
+    "Keep pseudocode, parameter, dataset, antibody, siRNA, and supplementary-table captions when they are "
+    "introduced by a table label and describe the table. "
+    "Reject in-text table references, reviewer comments, standalone table cells, column headers, and body prose. "
+    "Return the full caption text exactly from the candidate after the separator, preserving the table label. "
+    "Be exhaustive and keep document order. "
+    'Return JSON only: {"tables": ["Table 1. ...", "Table S1. ..."]}.'
+)
+
+# TODO(rewrite): placeholder.
+KEYWORD_EXTRACTION_PROMPT = (
+    "Extract the article's author-supplied keyword lists from the front-matter lines. "
+    "Different language sections may carry their own keyword list (English Keywords, Portuguese Palavras-chave, "
+    "Spanish Palabras clave, Descritores, Descriptors). "
+    "Return one entry per language list, with the canonical language code (en, pt, es). "
+    "Use only the supplied front-matter text; do not infer keywords from the title or abstract. "
+    "If no explicit keyword list is present, return an empty list. "
+    'Return JSON only: {"keyword_lists": [{"language": "en", "keywords": ["...", "..."]}]}.'
+)
+
+# TODO(rewrite): placeholder.
+KEYWORD_INFERENCE_PROMPT = (
+    "Infer 5-8 plausible keywords for this scientific article from its title and selected abstract. "
+    "Each keyword should be a 1-8 word noun phrase representing a key concept, method, or topic. "
+    "Avoid stopword-only phrases, numeric values, and overly broad terms. "
+    "Use only what the supplied title and abstract justify; do not invent results that aren't grounded. "
+    'Return JSON only: {"keywords": ["...", "..."]}.'
+)
+
+# TODO(rewrite): placeholder.
+KEYWORD_SELECTION_PROMPT = (
+    "Select the keyword list that matches the article's primary language and content. "
+    "Multiple candidate lists may have been extracted from different parts of the front matter or "
+    "different language sections. Prefer the list whose language matches the requested language code, "
+    "that contains real domain-specific terms (not journal labels or affiliations), and that aligns "
+    "with the title and abstract. "
+    "Return ONLY entries that appear verbatim in one of the candidate_keyword_lists; do not invent "
+    "or merge across lists. "
+    'Return JSON only: {"keywords": ["...", "..."]}.'
 )

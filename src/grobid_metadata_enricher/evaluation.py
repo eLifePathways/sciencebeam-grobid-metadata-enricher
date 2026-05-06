@@ -38,14 +38,6 @@ def author_match(gold: str, predicted_authors: List[str]) -> bool:
     return False
 
 
-def jaccard_recall(gold: str, predicted: str) -> float:
-    gold_tokens = set(normalize_tokens(gold))
-    predicted_tokens = set(normalize_tokens(predicted))
-    if not gold_tokens:
-        return 1.0
-    return len(gold_tokens & predicted_tokens) / max(1, len(gold_tokens))
-
-
 def keyword_recall(gold: List[str], predicted: List[str]) -> float:
     gold_values = {normalize_text(value) for value in gold if normalize_text(value)}
     predicted_values = {normalize_text(value) for value in predicted if normalize_text(value)}
@@ -62,7 +54,10 @@ def scalar_match(gold: str, predicted: str) -> Optional[int]:
 
 
 def normalize_identifier(value: str) -> str:
-    return value.strip().lower().replace("doi:", "").strip()
+    normalized = value.strip().lower().replace("doi:", "").strip()
+    if normalized.startswith("10."):
+        normalized = re.sub(r"\s+", "", normalized)
+    return normalized
 
 
 def identifier_recall(gold: List[str], predicted: List[str]) -> float:
@@ -75,6 +70,10 @@ def identifier_recall(gold: List[str], predicted: List[str]) -> float:
 
 def levenshtein_sim(a: str, b: str) -> float:
     return _Levenshtein.normalized_similarity(a or "", b or "")
+
+
+def normalized_edit_sim(a: str, b: str) -> float:
+    return levenshtein_sim(normalize_text(a), normalize_text(b))
 
 
 def language_match(gold: str, predicted: str) -> Optional[int]:
@@ -122,7 +121,8 @@ def _bipartite_pr(
 
 
 def _abstract_pr(gold: str, predicted: str) -> PRTriple:
-    return _set_pr(set(normalize_tokens(gold)), set(normalize_tokens(predicted)))
+    sim = normalized_edit_sim(gold, predicted)
+    return (sim, sim, sim)
 
 
 def _keyword_pr(gold: List[str], predicted: List[str]) -> PRTriple:
@@ -139,19 +139,19 @@ def _identifier_pr(gold: List[str], predicted: List[str]) -> PRTriple:
     return _set_pr(g, p)
 
 
-def _token_jaccard_match(gold_tokens: set, pred_tokens: set, threshold: float) -> bool:
-    if not gold_tokens or not pred_tokens:
+def _edit_similarity_match(gold: str, pred: str, threshold: float) -> bool:
+    if not normalize_text(gold) or not normalize_text(pred):
         return False
-    return len(gold_tokens & pred_tokens) / max(1, len(gold_tokens | pred_tokens)) >= threshold
+    return normalized_edit_sim(gold, pred) >= threshold
 
 
 def _section_head_pr(gold_heads: List[str], pred_heads: List[str], threshold: float = 0.7) -> PRTriple:
-    golds = [set(normalize_tokens(h)) for h in (gold_heads or []) if normalize_text(h)]
-    preds = [set(normalize_tokens(h)) for h in (pred_heads or []) if normalize_text(h)]
+    golds = [h for h in (gold_heads or []) if normalize_text(h)]
+    preds = [h for h in (pred_heads or []) if normalize_text(h)]
     return _bipartite_pr(
         len(golds),
         len(preds),
-        lambda gi, pi: _token_jaccard_match(golds[gi], preds[pi], threshold),
+        lambda gi, pi: _edit_similarity_match(golds[gi], preds[pi], threshold),
     )
 
 
@@ -160,18 +160,11 @@ def _caption_set_pr(gold_captions: List[str], pred_captions: List[str]) -> PRTri
     preds = [c for c in (pred_captions or []) if normalize_text(c)]
     if not golds:
         return (None, None, None)
-    try:
-        from rapidfuzz.fuzz import ratio as fuzz_ratio
-
-        gl = [g.lower() for g in golds]
-        pl = [p.lower() for p in preds]
-        return _bipartite_pr(
-            len(golds),
-            len(preds),
-            lambda gi, pi: fuzz_ratio(gl[gi], pl[pi]) >= 75,
-        )
-    except ImportError:
-        return _section_head_pr(golds, preds, threshold=0.5)
+    return _bipartite_pr(
+        len(golds),
+        len(preds),
+        lambda gi, pi: normalized_edit_sim(golds[gi], preds[pi]) >= 0.75,
+    )
 
 
 def _reference_pr(gold: Dict[str, Any], predicted: Dict[str, Any]) -> PRTriple:
@@ -191,7 +184,7 @@ def _reference_pr(gold: Dict[str, Any], predicted: Dict[str, Any]) -> PRTriple:
 def _reference_combined_pr(
     gold: Dict[str, Any],
     predicted: Dict[str, Any],
-    fuzzy_threshold_pct: int = 50,
+    edit_threshold: float = 0.5,
 ) -> PRTriple:
     records = gold.get("reference_records") or []
     if not records:
@@ -199,11 +192,6 @@ def _reference_combined_pr(
     pred_doi_set = {normalize_identifier(str(d)) for d in (predicted.get("reference_dois") or []) if d}
     pred_doi_set.discard("")
     pred_titles = [str(t) for t in (predicted.get("reference_titles") or []) if t]
-    try:
-        from rapidfuzz.fuzz import token_set_ratio
-        use_fuzzy = True
-    except ImportError:
-        use_fuzzy = False
 
     used_doi: set = set()
     used_title = [False] * len(pred_titles)
@@ -217,39 +205,21 @@ def _reference_combined_pr(
             continue
         if not title:
             continue
-        if use_fuzzy:
-            tl = title.lower()
-            best_i = -1
-            best_r = -1.0
-            for i, pt in enumerate(pred_titles):
-                if used_title[i]:
-                    continue
-                rr = token_set_ratio(tl, pt.lower())
-                if rr > best_r:
-                    best_r = rr
-                    best_i = i
-            if best_i >= 0 and best_r >= fuzzy_threshold_pct:
-                used_title[best_i] = True
-                matched += 1
-        else:
-            g_tokens = set(normalize_tokens(title))
-            if not g_tokens:
+        title_norm = normalize_text(title)
+        if not title_norm:
+            continue
+        best_i = -1
+        best_sim = -1.0
+        for i, pt in enumerate(pred_titles):
+            if used_title[i]:
                 continue
-            best_i = -1
-            best_j = -1.0
-            for i, pt in enumerate(pred_titles):
-                if used_title[i]:
-                    continue
-                ps = set(normalize_tokens(pt))
-                if not ps:
-                    continue
-                j = len(g_tokens & ps) / max(1, len(g_tokens | ps))
-                if j > best_j:
-                    best_j = j
-                    best_i = i
-            if best_i >= 0 and best_j >= 0.3:
-                used_title[best_i] = True
-                matched += 1
+            sim = normalized_edit_sim(title_norm, pt)
+            if sim > best_sim:
+                best_sim = sim
+                best_i = i
+        if best_i >= 0 and best_sim >= edit_threshold:
+            used_title[best_i] = True
+            matched += 1
 
     pred_total = len(pred_doi_set) + len(pred_titles)
     rec = matched / len(records)
@@ -368,16 +338,17 @@ def write_root_cause_report(
     metric_order = [
         "title_match",
         "authors_recall",
-        "abstract_recall",
-        "keywords_recall",
+        "abstract_f1",
+        "abstract_edit_sim",
+        "keywords_f1",
         "publisher_match",
         "date_match",
         "language_match",
-        "identifiers_recall",
-        "relations_recall",
+        "identifiers_f1",
+        "relations_f1",
         "rights_match",
-        "types_recall",
-        "formats_recall",
+        "types_f1",
+        "formats_f1",
     ]
     present_metrics = [f"{metric}~{summary[metric]:.3f}" for metric in metric_order if metric in summary]
     if present_metrics:
