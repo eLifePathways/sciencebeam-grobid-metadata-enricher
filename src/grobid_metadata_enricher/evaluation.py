@@ -76,6 +76,10 @@ def normalized_edit_sim(a: str, b: str) -> float:
     return levenshtein_sim(normalize_text(a), normalize_text(b))
 
 
+def get_max_levenshtein_sim(predicted: str, golds: List[str]) -> float:
+    return max(levenshtein_sim(predicted, gold) for gold in golds)
+
+
 def language_match(gold: str, predicted: str) -> Optional[int]:
     if not gold:
         return None
@@ -240,7 +244,12 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
 
     predicted_title = normalize_text(predicted.get("title", ""))
     gold_titles = gold.get("titles") or [gold.get("title", "")]
-    metrics["title_match"] = 1 if any(predicted_title == normalize_text(title) for title in gold_titles if title) else 0
+    assert gold_titles
+    normalized_gold_titles = [normalize_text(gold_title) for gold_title in gold_titles]
+    metrics["title_match"] = 1 if any(predicted_title == title for title in normalized_gold_titles if title) else 0
+    metrics["title_edit_sim"] = (
+        get_max_levenshtein_sim(predicted=predicted_title, golds=normalized_gold_titles)
+    )
 
     predicted_authors = predicted.get("authors") or []
     gold_authors = gold.get("authors") or []
@@ -254,12 +263,13 @@ def evaluate_record(predicted: Dict[str, Any], gold: Dict[str, Any]) -> Dict[str
     gold_abstracts = [a for a in (gold.get("abstracts") or [gold.get("abstract", "")]) if a]
     if gold_abstracts:
         prs = [_abstract_pr(g, predicted_abstract) for g in gold_abstracts]
-        edits = [levenshtein_sim(g, predicted_abstract) for g in gold_abstracts]
         best = max(prs, key=lambda t: t[2] or -1.0)
         metrics["abstract_precision"] = best[0]
         metrics["abstract_recall"] = best[1]
         metrics["abstract_f1"] = best[2]
-        metrics["abstract_edit_sim"] = max(edits)
+        metrics["abstract_edit_sim"] = get_max_levenshtein_sim(
+            predicted=predicted_abstract, golds=gold_abstracts
+        )
     else:
         metrics["abstract_precision"] = None
         metrics["abstract_recall"] = None
@@ -337,6 +347,7 @@ def write_root_cause_report(
     lines.append("")
     metric_order = [
         "title_match",
+        "title_edit_sim",
         "authors_recall",
         "abstract_f1",
         "abstract_edit_sim",
