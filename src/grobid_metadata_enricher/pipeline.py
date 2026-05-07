@@ -1593,6 +1593,58 @@ def _estimate_column_count(
     return 2
 
 
+_HYPHEN_LINEBREAK_RE = re.compile(r"(\w)-\s+(\w)")
+
+
+def _dehyphenate(text: str) -> str:
+    """Collapse end-of-line hyphenation when joining ALTO lines: 'experi- ment' -> 'experiment'.
+    Conservative: only joins when both sides are word characters.
+    """
+    prev = None
+    while prev != text:
+        prev = text
+        text = _HYPHEN_LINEBREAK_RE.sub(r"\1\2", text)
+    return text
+
+
+def resolve_field_text(
+    parsed_text: str,
+    indices: Sequence[Any],
+    lines: Sequence[LayoutLine],
+) -> str:
+    """Reconstruct field text from LLM-supplied 1-indexed line indices into ALTO lines.
+
+    Returns the LLM's parsed_text fallback when:
+      - indices is empty/missing
+      - any index is out of bounds, non-integer, or duplicated
+      - the indexed lines have no usable text content
+
+    Otherwise joins the referenced lines in the order given (preserving the
+    LLM's chosen sequence), de-hyphenates trailing-hyphen line breaks, and
+    collapses whitespace.
+    """
+    if not indices:
+        return parsed_text
+    valid: List[int] = []
+    seen: set = set()
+    for raw in indices:
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return parsed_text
+        if not 1 <= raw <= len(lines):
+            return parsed_text
+        if raw in seen:
+            return parsed_text
+        seen.add(raw)
+        valid.append(raw)
+    pieces = [(lines[i - 1].get("text") or "").strip() for i in valid]
+    pieces = [p for p in pieces if p]
+    if not pieces:
+        return parsed_text
+    joined = " ".join(pieces)
+    joined = _dehyphenate(joined)
+    return re.sub(r"\s+", " ", joined).strip()
+
+
 def predict_header_metadata(context: DocumentContext, chat: Callable[..., str]) -> MetadataRecord:
     lines = front_matter_evidence_lines(context, max_lines=80, max_page=3)
     first_page_lines = [ln for ln in lines if int(ln.get("page", 0) or 0) == 0]
@@ -1609,8 +1661,16 @@ def predict_header_metadata(context: DocumentContext, chat: Callable[..., str]) 
         {"role": "system", "content": HEADER_METADATA_PROMPT},
         {"role": "user", "content": format_header_lines(lines)},
     ]
-    raw = chat(messages, temperature=0.0, max_tokens=700, step_name="HEADER_METADATA")
-    return normalize_metadata(safe_extract_json(raw))
+    raw = chat(messages, temperature=0.0, max_tokens=900, step_name="HEADER_METADATA")
+    parsed = safe_extract_json(raw)
+    metadata = normalize_metadata(parsed)
+    metadata["title"] = resolve_field_text(
+        metadata.get("title", "") or "", parsed.get("title_lines") or [], lines
+    )
+    metadata["abstract"] = resolve_field_text(
+        metadata.get("abstract", "") or "", parsed.get("abstract_lines") or [], lines
+    )
+    return metadata
 
 
 def predict_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> MetadataRecord:

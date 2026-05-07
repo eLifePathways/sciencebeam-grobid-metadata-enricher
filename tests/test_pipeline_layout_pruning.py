@@ -17,6 +17,7 @@ from grobid_metadata_enricher.pipeline import (
     predict_header_metadata,
     prune_layout_lines,
     reference_candidate_texts,
+    resolve_field_text,
     table_caption_candidate_texts,
 )
 
@@ -752,3 +753,27 @@ def test_predict_content_fields_runs_legacy_number_stripping_pass_for_biorxiv_la
     assert len(body_prompts) == 2
     assert any("following_text:" in prompt for prompt in body_prompts)
     assert any("following_text:" not in prompt for prompt in body_prompts)
+
+
+def test_resolve_field_text_joins_and_dehyphenates_valid_indices() -> None:
+    lines = [
+        {"text": "Ethics in the publication of"},
+        {"text": "studies on human visceral"},
+        {"text": "leishmaniasis in Brazilian"},
+        {"text": "periodicals"},
+    ]
+    result = resolve_field_text("LLM-claimed text", [1, 2, 3, 4], lines)
+    assert result == "Ethics in the publication of studies on human visceral leishmaniasis in Brazilian periodicals"
+
+
+def test_resolve_field_text_dehyphenates_line_break_words() -> None:
+    lines = [{"text": "experi-"}, {"text": "ment was successful"}]
+    assert resolve_field_text("fallback", [1, 2], lines) == "experiment was successful"
+
+
+def test_resolve_field_text_falls_back_on_invalid_indices() -> None:
+    lines = [{"text": "alpha"}, {"text": "beta"}]
+    assert resolve_field_text("FALLBACK", [], lines) == "FALLBACK"
+    assert resolve_field_text("FALLBACK", [1, 99], lines) == "FALLBACK"
+    assert resolve_field_text("FALLBACK", ["1", "2"], lines) == "FALLBACK"
+    assert resolve_field_text("FALLBACK", [1, 1, 2], lines) == "FALLBACK"
