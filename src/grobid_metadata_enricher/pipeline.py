@@ -1645,6 +1645,35 @@ def resolve_field_text(
     return re.sub(r"\s+", " ", joined).strip()
 
 
+def resolve_field_list(
+    parsed_items: Sequence[str],
+    indices_groups: Sequence[Any],
+    lines: Sequence[LayoutLine],
+) -> List[str]:
+    """Reconstruct each list item from its group of 1-indexed line indices.
+
+    `indices_groups` is a list of lists; the i-th inner list holds the lines
+    that comprise the i-th item. Each inner group is reconstructed via the
+    same validation + dehyphenation as `resolve_field_text`. On any inner
+    failure, falls back to the LLM's `parsed_items[i]` (or "" if missing).
+    Returns the full list, preserving the LLM's order.
+    """
+    out: List[str] = []
+    parsed_len = len(parsed_items)
+    if not indices_groups:
+        return [str(p) for p in parsed_items if str(p).strip()]
+    for i, group in enumerate(indices_groups):
+        fallback = str(parsed_items[i]) if i < parsed_len else ""
+        if not isinstance(group, list):
+            if fallback.strip():
+                out.append(fallback)
+            continue
+        text = resolve_field_text(fallback, group, lines)
+        if text.strip():
+            out.append(text)
+    return out
+
+
 def predict_header_metadata(context: DocumentContext, chat: Callable[..., str]) -> MetadataRecord:
     lines = front_matter_evidence_lines(context, max_lines=80, max_page=3)
     first_page_lines = [ln for ln in lines if int(ln.get("page", 0) or 0) == 0]
@@ -1661,7 +1690,7 @@ def predict_header_metadata(context: DocumentContext, chat: Callable[..., str]) 
         {"role": "system", "content": HEADER_METADATA_PROMPT},
         {"role": "user", "content": format_header_lines(lines)},
     ]
-    raw = chat(messages, temperature=0.0, max_tokens=900, step_name="HEADER_METADATA")
+    raw = chat(messages, temperature=0.0, max_tokens=1100, step_name="HEADER_METADATA")
     parsed = safe_extract_json(raw)
     metadata = normalize_metadata(parsed)
     metadata["title"] = resolve_field_text(
@@ -1670,6 +1699,20 @@ def predict_header_metadata(context: DocumentContext, chat: Callable[..., str]) 
     metadata["abstract"] = resolve_field_text(
         metadata.get("abstract", "") or "", parsed.get("abstract_lines") or [], lines
     )
+    parsed_authors = parsed.get("authors") or []
+    if isinstance(parsed_authors, list):
+        author_groups = parsed.get("author_groups") or []
+        if isinstance(author_groups, list) and author_groups:
+            metadata["authors"] = resolve_field_list(
+                [str(a) for a in parsed_authors], author_groups, lines
+            )
+    parsed_keywords = parsed.get("keywords") or []
+    if isinstance(parsed_keywords, list):
+        keyword_groups = parsed.get("keyword_groups") or []
+        if isinstance(keyword_groups, list) and keyword_groups:
+            metadata["keywords"] = resolve_field_list(
+                [str(k) for k in parsed_keywords], keyword_groups, lines
+            )
     return metadata
 
 

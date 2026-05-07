@@ -17,6 +17,7 @@ from grobid_metadata_enricher.pipeline import (
     predict_header_metadata,
     prune_layout_lines,
     reference_candidate_texts,
+    resolve_field_list,
     resolve_field_text,
     table_caption_candidate_texts,
 )
@@ -777,3 +778,27 @@ def test_resolve_field_text_falls_back_on_invalid_indices() -> None:
     assert resolve_field_text("FALLBACK", [1, 99], lines) == "FALLBACK"
     assert resolve_field_text("FALLBACK", ["1", "2"], lines) == "FALLBACK"
     assert resolve_field_text("FALLBACK", [1, 1, 2], lines) == "FALLBACK"
+
+
+def test_resolve_field_list_reconstructs_per_item_groups() -> None:
+    lines = [{"text": "Author One"}, {"text": "Author Two"}, {"text": "Author Three"}]
+    assert resolve_field_list(["A", "B", "C"], [[1], [2], [3]], lines) == [
+        "Author One", "Author Two", "Author Three"
+    ]
+
+
+def test_resolve_field_list_joins_multi_line_groups_with_dehyphenation() -> None:
+    lines = [{"text": "Maria"}, {"text": "Andrea Yáñez"}, {"text": "John Smith"}]
+    assert resolve_field_list(
+        ["Maria Andrea Yáñez", "John Smith"], [[1, 2], [3]], lines
+    ) == ["Maria Andrea Yáñez", "John Smith"]
+
+
+def test_resolve_field_list_falls_back_per_item_on_invalid_group() -> None:
+    lines = [{"text": "alpha"}, {"text": "beta"}]
+    # Empty groups -> use parsed_items wholesale
+    assert resolve_field_list(["A", "B"], [], lines) == ["A", "B"]
+    # Per-item fallback when one group is invalid
+    assert resolve_field_list(["KEEP_ME", "FALLBACK"], [[1], [99]], lines) == ["alpha", "FALLBACK"]
+    # Non-list group falls back per item
+    assert resolve_field_list(["KEEP_ME", "FALLBACK"], [[1], "garbage"], lines) == ["alpha", "FALLBACK"]
