@@ -431,6 +431,51 @@ def test_reference_candidate_evidence_chunks_returns_empty_when_no_references() 
     assert not build_reference_candidate_evidence_chunks(lines, chunk_size=50)
 
 
+def test_reference_section_heading_survives_repeated_furniture_pruning() -> None:
+    # Long bibliographies repeat 'References' as a running header on continuation
+    # pages; pruning treated the heading as repeated furniture, leaving the
+    # reference detector with nothing to anchor to.
+    lines = [
+        _styled_line("Body paragraph one with substantive sentence content here.", page=0, y=400.0),
+        _styled_line("References", page=1, y=80.0),
+        _styled_line(
+            "Smith A, Jones B, Davis C: Useful cited work on the topic. Journal Name. 2020.",
+            page=1,
+            y=120.0,
+        ),
+        _styled_line("References", page=2, y=80.0),
+        _styled_line(
+            "Smith A, Jones B, Davis C: Useful cited work on the topic. Journal Name. 2020.",
+            page=2,
+            y=120.0,
+        ),
+        _styled_line("References", page=3, y=80.0),
+        _styled_line(
+            "Smith A, Jones B, Davis C: Useful cited work on the topic. Journal Name. 2020.",
+            page=3,
+            y=120.0,
+        ),
+    ]
+
+    pruned = prune_layout_lines(lines)
+    assert any(line["text"] == "References" for line in pruned)
+
+
+def test_reference_start_index_picks_earliest_when_heading_repeats() -> None:
+    from grobid_metadata_enricher.pipeline import _reference_start_index
+    lines = [
+        _styled_line("References", page=0, y=80.0),
+        _styled_line(
+            "Smith A: First reference of the article bibliography. Journal. 2020.",
+            page=0,
+            y=120.0,
+        ),
+        _styled_line("References", page=2, y=80.0),  # reviewer report bibliography
+    ]
+
+    assert _reference_start_index(lines) == 0
+
+
 def test_predict_content_fields_preserves_distinct_similar_table_captions() -> None:
     lines = [
         _styled_line(

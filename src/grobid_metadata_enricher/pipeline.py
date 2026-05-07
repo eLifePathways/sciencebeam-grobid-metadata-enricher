@@ -262,6 +262,15 @@ _LAYOUT_FURNITURE_RE = re.compile(
 )
 _LAYOUT_IDENTIFIER_RE = re.compile(r"\b(?:doi\s*:|https?://|www\.)", re.IGNORECASE)
 _LAYOUT_PUNCT_ONLY_RE = re.compile(r"^[\W_]+$")
+# Section anchor headings preserved through repeated-furniture pruning. Long
+# bibliographies and supplements often repeat the section title at the top of
+# each continuation page; dropping them as furniture loses the start anchor
+# the downstream LLM and TEI extractors rely on.
+_SECTION_ANCHOR_RE = re.compile(
+    r"^\s*(references|referencias|referências|bibliography|literature\s+cited|"
+    r"acknowledgements?|acknowledgments?)\s*[:.]?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _layout_text(line: LayoutLine) -> str:
@@ -318,7 +327,11 @@ def is_layout_furniture_line(
     ys = _page_y_scale(line)
     xs = _page_x_scale(line)
     key = text.casefold()
-    if key in repeated_keys and (y < 65 * ys or y > 720 * ys or len(text) < 90):
+    # Known section anchors are never furniture even when the layout repeats
+    # them on continuation pages (e.g. ORE bibliographies span 5+ pages with
+    # "References" as a running header on each).
+    is_section_anchor = bool(_SECTION_ANCHOR_RE.fullmatch(text))
+    if key in repeated_keys and (y < 65 * ys or y > 720 * ys or len(text) < 90) and not is_section_anchor:
         return True
     if x < 60 * xs and len(text) <= 6 and re.fullmatch(r"[\dA-Za-z.:-]+", text):
         return True
@@ -2140,12 +2153,14 @@ _REFERENCE_SECTION_STOP_RE = re.compile(
 
 
 def _reference_start_index(lines: Sequence[LayoutLine]) -> Optional[int]:
-    matches = [
-        index
-        for index, line in enumerate(lines)
-        if _REFERENCE_HEADING_RE.match(_layout_text(line))
-    ]
-    return matches[-1] if matches else None
+    """Pick the earliest 'References' heading. ORE-style review-attached papers
+    repeat the heading on each reviewer report; using the latest match anchored
+    the candidate region to a reviewer's bibliography (~25 entries) instead of
+    the article's own (~164 entries). The earliest heading is the article's."""
+    for index, line in enumerate(lines):
+        if _REFERENCE_HEADING_RE.match(_layout_text(line)):
+            return index
+    return None
 
 
 def _looks_like_reference_entry_start(text: str) -> bool:
