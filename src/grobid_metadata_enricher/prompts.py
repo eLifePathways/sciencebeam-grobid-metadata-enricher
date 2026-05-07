@@ -1,8 +1,18 @@
 HEADER_METADATA_PROMPT = (
     "Extract structured header metadata from the provided PDF lines. "
-    "Use only the supplied lines. "
-    "Return JSON with fields: title, authors, affiliations, abstract, keywords. "
-    "Use empty strings or empty lists when a field is not present."
+    "Each input line is prefixed with its 1-indexed line number. "
+    "Use only the supplied lines.\n\n"
+    "Return JSON with these text fields: title, authors, affiliations, abstract, "
+    "keywords. Use empty strings or empty lists when a field is not present.\n\n"
+    "ALSO return these supporting line-index lists (1-indexed integers, in "
+    "document order, referencing the lines that comprise each field): "
+    "title_lines, abstract_lines. "
+    "Each index must reference an actual input line. "
+    "Use empty lists when the field is not present.\n\n"
+    "When the article contains multiple language versions of the same field "
+    "(e.g. a Portuguese and English title), pick the one that matches the "
+    "document's primary language. List ONLY the chosen language's lines in "
+    "the *_lines list — do not mix languages."
 )
 
 TEI_METADATA_PROMPT = (

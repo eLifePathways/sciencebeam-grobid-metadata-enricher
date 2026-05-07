@@ -1593,6 +1593,87 @@ def _estimate_column_count(
     return 2
 
 
+_HYPHEN_LINEBREAK_RE = re.compile(r"(\w)-\s+(\w)")
+
+
+def _dehyphenate(text: str) -> str:
+    """Collapse end-of-line hyphenation when joining ALTO lines: 'experi- ment' -> 'experiment'.
+    Conservative: only joins when both sides are word characters.
+    """
+    prev = None
+    while prev != text:
+        prev = text
+        text = _HYPHEN_LINEBREAK_RE.sub(r"\1\2", text)
+    return text
+
+
+def resolve_field_text(
+    parsed_text: str,
+    indices: Sequence[Any],
+    lines: Sequence[LayoutLine],
+) -> str:
+    """Reconstruct field text from LLM-supplied 1-indexed line indices into ALTO lines.
+
+    Returns the LLM's parsed_text fallback when:
+      - indices is empty/missing
+      - any index is out of bounds, non-integer, or duplicated
+      - the indexed lines have no usable text content
+
+    Otherwise joins the referenced lines in the order given (preserving the
+    LLM's chosen sequence), de-hyphenates trailing-hyphen line breaks, and
+    collapses whitespace.
+    """
+    if not indices:
+        return parsed_text
+    valid: List[int] = []
+    seen: set = set()
+    for raw in indices:
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return parsed_text
+        if not 1 <= raw <= len(lines):
+            return parsed_text
+        if raw in seen:
+            return parsed_text
+        seen.add(raw)
+        valid.append(raw)
+    pieces = [(lines[i - 1].get("text") or "").strip() for i in valid]
+    pieces = [p for p in pieces if p]
+    if not pieces:
+        return parsed_text
+    joined = " ".join(pieces)
+    joined = _dehyphenate(joined)
+    return re.sub(r"\s+", " ", joined).strip()
+
+
+def resolve_field_list(
+    parsed_items: Sequence[str],
+    indices_groups: Sequence[Any],
+    lines: Sequence[LayoutLine],
+) -> List[str]:
+    """Reconstruct each list item from its group of 1-indexed line indices.
+
+    `indices_groups` is a list of lists; the i-th inner list holds the lines
+    that comprise the i-th item. Each inner group is reconstructed via the
+    same validation + dehyphenation as `resolve_field_text`. On any inner
+    failure, falls back to the LLM's `parsed_items[i]` (or "" if missing).
+    Returns the full list, preserving the LLM's order.
+    """
+    out: List[str] = []
+    parsed_len = len(parsed_items)
+    if not indices_groups:
+        return [str(p) for p in parsed_items if str(p).strip()]
+    for i, group in enumerate(indices_groups):
+        fallback = str(parsed_items[i]) if i < parsed_len else ""
+        if not isinstance(group, list):
+            if fallback.strip():
+                out.append(fallback)
+            continue
+        text = resolve_field_text(fallback, group, lines)
+        if text.strip():
+            out.append(text)
+    return out
+
+
 def predict_header_metadata(context: DocumentContext, chat: Callable[..., str]) -> MetadataRecord:
     lines = front_matter_evidence_lines(context, max_lines=80, max_page=3)
     first_page_lines = [ln for ln in lines if int(ln.get("page", 0) or 0) == 0]
@@ -1609,8 +1690,16 @@ def predict_header_metadata(context: DocumentContext, chat: Callable[..., str]) 
         {"role": "system", "content": HEADER_METADATA_PROMPT},
         {"role": "user", "content": format_header_lines(lines)},
     ]
-    raw = chat(messages, temperature=0.0, max_tokens=700, step_name="HEADER_METADATA")
-    return normalize_metadata(safe_extract_json(raw))
+    raw = chat(messages, temperature=0.0, max_tokens=900, step_name="HEADER_METADATA")
+    parsed = safe_extract_json(raw)
+    metadata = normalize_metadata(parsed)
+    metadata["title"] = resolve_field_text(
+        metadata.get("title", "") or "", parsed.get("title_lines") or [], lines
+    )
+    metadata["abstract"] = resolve_field_text(
+        metadata.get("abstract", "") or "", parsed.get("abstract_lines") or [], lines
+    )
+    return metadata
 
 
 def predict_tei_metadata(context: DocumentContext, chat: Callable[..., str]) -> MetadataRecord:
@@ -3360,8 +3449,18 @@ _ALTO_PREFERRED_CONTENT_FIELDS = {
 }
 
 
+_REFERENCE_UNION_FIELDS = {"reference_dois", "reference_titles"}
+
+
 def merge_content_fields(tei_content: MetadataRecord, llm_content: MetadataRecord) -> MetadataRecord:
-    """Prefer ALTO/LLM content_fields; fall back to TEI when the LLM path returned nothing supported."""
+    """Prefer ALTO/LLM content_fields; fall back to TEI when the LLM path returned nothing supported.
+
+    Reference fields (reference_dois, reference_titles) are unioned rather than
+    replaced — GROBID's structural extractor often finds DOIs the LLM stage
+    later drops, and the previous "LLM if non-empty else TEI" rule was costing
+    340 correctly-extracted reference DOIs across a 149-doc smoke (worst case
+    scielo_br/S0101-28002026000200403: TEI 34, LLM 1, dropped 33 of 33 gold).
+    """
     out: MetadataRecord = dict(tei_content)
     for key in ("body_sections", "figure_captions", "table_captions", "reference_titles", "reference_dois"):
         predicate = _CONTENT_FIELD_PREDICATES.get(key)
@@ -3370,7 +3469,9 @@ def merge_content_fields(tei_content: MetadataRecord, llm_content: MetadataRecor
         if predicate is not None:
             tei_items = [i for i in tei_items if predicate(i)]
             llm_items = [i for i in llm_items if predicate(i)]
-        if key in _ALTO_PREFERRED_CONTENT_FIELDS:
+        if key in _REFERENCE_UNION_FIELDS:
+            chosen = tei_items + llm_items
+        elif key in _ALTO_PREFERRED_CONTENT_FIELDS:
             chosen = llm_items if llm_items else tei_items
         else:
             chosen = tei_items if tei_items else llm_items
@@ -3394,11 +3495,12 @@ def enrich_references_with_crossref(
 ) -> MetadataRecord:
     """Augment empty reference fields by looking up GROBID biblStructs via Crossref.
 
-    Crossref is useful as a fallback when the parser found no references, but
-    adding DOI guesses on top of an existing TEI/LLM bibliography inflates the
-    predicted set and hurts F1 precision. Keep existing parser/LLM references as
-    the authoritative set, and only query Crossref when both reference fields are
-    empty.
+    All-or-nothing gate: only fires when pred has zero references. Per-bibl
+    enrichment was tried (commit 9ed6941) and refuted in CI — adding Crossref
+    DOIs on top of an existing bibliography inflated false positives faster
+    than it recovered missing DOIs (biorxiv reference_f1 0.908 -> 0.754 due to
+    +137 spurious DOIs). The CrossrefClient's MIN_TITLE_JACCARD floor wasn't
+    strict enough to prevent generic-title collisions on bioRxiv preprints.
     """
     import xml.etree.ElementTree as _ET
 
