@@ -1778,13 +1778,32 @@ _CONTENT_DOI_RE = re.compile(r"10\.\d{4,9}/[^\s<>\"'\\)]+", re.IGNORECASE)
 
 # DOIs that look bibliographic but reference non-citation entities. F1000-style
 # peer review reports use a `.r<digits>` suffix (e.g. 10.21956/openreseurope.X.r45404).
-# Zenodo deposits are NOT filtered — biorxiv articles often cite them as data
-# references and the gold reference_dois include them.
 _NON_CITATION_DOI_RE = re.compile(r"\.r\d+$", re.IGNORECASE)
+# Zenodo deposits are dual-use: biorxiv articles cite them as data references,
+# while ORE articles often have them as 'underlying data' deposits in the
+# article's own data-availability section. Treated as ambiguous and dropped
+# only when no standard DOI accompanies them in the same pred set.
+_AMBIGUOUS_DEPOSIT_DOI_RE = re.compile(r"/zenodo\.", re.IGNORECASE)
 
 
 def _is_citation_doi(doi: str) -> bool:
     return not _NON_CITATION_DOI_RE.search(doi or "")
+
+
+def _is_ambiguous_deposit_doi(doi: str) -> bool:
+    return bool(_AMBIGUOUS_DEPOSIT_DOI_RE.search(doi or ""))
+
+
+def _filter_ambiguous_deposits(dois: List[str]) -> List[str]:
+    """Drop zenodo deposit DOIs unless at least one standard citation DOI is
+    present. Standalone zenodo cites are typically the article's own data
+    deposit picked up by mistake, not a true citation."""
+    if not dois:
+        return dois
+    standard = [d for d in dois if _is_citation_doi(d) and not _is_ambiguous_deposit_doi(d)]
+    if standard:
+        return dois
+    return [d for d in dois if not _is_ambiguous_deposit_doi(d)]
 
 _FIGURE_CAPTION_START_RE = re.compile(
     r"^\s*(figure|fig|figura|esquema)\s*\.?\s*(?:s\s*)?(?:\d+[A-Za-z]?|[IVX]+)\b",
@@ -3498,6 +3517,8 @@ def merge_content_fields(tei_content: MetadataRecord, llm_content: MetadataRecor
             if k and k not in seen:
                 merged.append(item)
                 seen[k] = None
+        if key == "reference_dois":
+            merged = _filter_ambiguous_deposits(merged)
         out[key] = merged
     return out
 
