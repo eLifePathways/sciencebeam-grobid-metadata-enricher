@@ -10,6 +10,7 @@ from unittest.mock import Mock
 from grobid_metadata_enricher.pipeline import (
     DocumentContext,
     build_body_section_candidate_evidence,
+    build_reference_candidate_evidence_chunks,
     enrich_references_with_crossref,
     figure_caption_candidate_texts,
     merge_content_fields,
@@ -402,6 +403,32 @@ def test_reference_candidates_read_two_column_references_column_by_column() -> N
         "3. Right A. First right title. Journal right continuation.",
         "4. Right B. Second right title. Journal right two.",
     ]
+
+
+def test_reference_candidate_evidence_chunks_split_long_bibliography() -> None:
+    lines = [_styled_line("References", page=0, y=80.0)]
+    for i in range(120):
+        lines.append(_styled_line(
+            f"{i + 1}. Author{i}, B. Title of work {i} on relevant topic. Journal Name {2000 + i}.",
+            page=0,
+            y=100.0 + i * 12.0,
+        ))
+
+    chunks = build_reference_candidate_evidence_chunks(lines, chunk_size=50)
+
+    assert len(chunks) == 3
+    assert chunks[0].splitlines()[0].startswith("[1] ")
+    assert chunks[0].splitlines()[-1].startswith("[50] ")
+    assert chunks[1].splitlines()[0].startswith("[51] ")
+    assert chunks[1].splitlines()[-1].startswith("[100] ")
+    assert chunks[2].splitlines()[0].startswith("[101] ")
+    assert chunks[2].splitlines()[-1].startswith("[120] ")
+
+
+def test_reference_candidate_evidence_chunks_returns_empty_when_no_references() -> None:
+    lines = [_styled_line("Introduction", page=0, y=80.0)]
+
+    assert not build_reference_candidate_evidence_chunks(lines, chunk_size=50)
 
 
 def test_predict_content_fields_preserves_distinct_similar_table_captions() -> None:
