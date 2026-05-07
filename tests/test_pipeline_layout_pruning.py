@@ -213,6 +213,26 @@ def test_merge_content_fields_prefers_alto_content_fields_over_tei() -> None:
     assert result["reference_dois"] == ["10.1000/tei", "10.1000/alto"]
 
 
+def test_merge_content_fields_drops_peer_review_and_zenodo_dois() -> None:
+    result = merge_content_fields(
+        {
+            "reference_dois": [
+                "10.21956/openreseurope.19894.r45404",
+                "10.5281/zenodo.13785039",
+                "10.18174/569408",
+            ],
+        },
+        {
+            "reference_dois": [
+                "10.5281/zenodo.7300150",
+                "10.1016/j.cities.2007.01.009",
+            ],
+        },
+    )
+
+    assert result["reference_dois"] == ["10.18174/569408", "10.1016/j.cities.2007.01.009"]
+
+
 def test_body_section_candidates_include_normal_weight_gap_separated_headings_after_intro() -> None:
     lines = [
         _styled_line("Background", page=0, y=90.0, font_size=9.2),

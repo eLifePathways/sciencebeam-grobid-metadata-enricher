@@ -46,10 +46,15 @@ from grobid_metadata_enricher.pipeline import (
 )
 
 # Corpora whose gold carries body sections / captions / references and
-# therefore score the content-side gated metrics. Running the extra 3 LLM
-# calls + Crossref lookups on scielo_preprints (OAI-DC) would be wasted:
-# nothing to compare against.
-_CONTENT_CORPORA = {"biorxiv", "ore", "pkp", "scielo_br", "scielo_mx"}
+# therefore score the content-side gated metrics.
+_CONTENT_CORPORA = {
+    "biorxiv",
+    "ore",
+    "pkp",
+    "scielo_br",
+    "scielo_mx",
+    "scielo_preprints-jats",
+}
 
 # Exact per-metric token attribution is not recoverable because a single LLM
 # call (e.g. HEADER_METADATA) feeds multiple evaluation metrics at once; this
