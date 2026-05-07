@@ -47,7 +47,8 @@ def _parser_label(rec: dict, hint: Optional[str]) -> str:
 
 
 def upsert_run(cur: psycopg.Cursor, run_dir: pathlib.Path,
-               parser_hint: Optional[str], ci_run_id: Optional[int]) -> None:
+               parser_hint: Optional[str], ci_run_id: Optional[int],
+               created_at: Optional[str] = None) -> None:
     rec = json.loads((run_dir / "run_record.json").read_text())
     metrics = json.loads((run_dir / "metrics.json").read_text())
     docs_path = run_dir / "per_document.jsonl"
@@ -56,15 +57,20 @@ def upsert_run(cur: psycopg.Cursor, run_dir: pathlib.Path,
 
     sha = rec["git_commit"]
     parser = _parser_label(rec, parser_hint)
+    # When the caller knows when the CI run actually started (gh.createdAt during
+    # backfill, GITHUB_RUN_STARTED_AT inside CI) prefer that over the DEFAULT
+    # now() so the dashboard's commit picker shows real run times.
+    created_at = created_at or os.environ.get("GITHUB_RUN_STARTED_AT") or None
 
     cur.execute(
         """
         INSERT INTO bench_run (
-          run_sha, parser, ci_run_id, mode, n_records, n_errors, elapsed_s,
+          run_sha, parser, ci_run_id, created_at, mode, n_records, n_errors, elapsed_s,
           dataset, llm_config, tokens_total, tokens_by_stage, tokens_by_metric_group
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ) VALUES (%s,%s,%s,COALESCE(%s::timestamptz, now()),%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (run_sha, parser) DO UPDATE SET
           ci_run_id              = EXCLUDED.ci_run_id,
+          created_at             = COALESCE(EXCLUDED.created_at, bench_run.created_at),
           mode                   = EXCLUDED.mode,
           n_records              = EXCLUDED.n_records,
           n_errors               = EXCLUDED.n_errors,
@@ -76,7 +82,7 @@ def upsert_run(cur: psycopg.Cursor, run_dir: pathlib.Path,
           tokens_by_metric_group = EXCLUDED.tokens_by_metric_group
         """,
         (
-            sha, parser, ci_run_id, rec.get("mode"),
+            sha, parser, ci_run_id, created_at, rec.get("mode"),
             rec.get("n_records"), rec.get("n_errors"), rec.get("elapsed_s"),
             _json(rec.get("dataset")),
             _json(rec.get("llm")),
@@ -180,6 +186,7 @@ def backfill(repo: str, dsn: str, limit: int = 100) -> None:
                         cur, art,
                         parser_hint=_parser_from_artifact_name(art.name),
                         ci_run_id=r["databaseId"],
+                        created_at=r.get("createdAt"),
                     )
         conn.commit()
 
@@ -193,6 +200,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--repo", default="eLifePathways/sciencebeam-grobid-metadata-enricher")
     ap.add_argument("--parser", default=None, help="Override parser when run_record.json lacks it")
     ap.add_argument("--ci-run-id", type=int, default=None)
+    ap.add_argument("--created-at", default=None,
+                    help="ISO timestamp for bench_run.created_at; defaults to GITHUB_RUN_STARTED_AT or now()")
     ap.add_argument("--limit", type=int, default=100, help="Max past runs to backfill")
     args = ap.parse_args(argv)
 
@@ -206,7 +215,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     with psycopg.connect(dsn) as conn, conn.cursor() as cur:
-        upsert_run(cur, pathlib.Path(args.run_dir), args.parser, args.ci_run_id)
+        upsert_run(cur, pathlib.Path(args.run_dir), args.parser, args.ci_run_id,
+                   created_at=args.created_at)
         conn.commit()
     return 0
 

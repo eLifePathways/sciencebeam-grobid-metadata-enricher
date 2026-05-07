@@ -1,0 +1,202 @@
+{
+  "uid": "sciencebeam-bench",
+  "title": "ScienceBeam bench: commit comparison",
+  "tags": ["sciencebeam", "benchmark"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "",
+  "time": { "from": "now-30d", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "parser",
+        "label": "Parser",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "${DS_SCIENCEBEAM_BENCH}" },
+        "query": "SELECT DISTINCT parser FROM bench_run ORDER BY parser",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": { "text": "grobid", "value": "grobid" }
+      },
+      {
+        "name": "current_sha",
+        "label": "Current commit",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "${DS_SCIENCEBEAM_BENCH}" },
+        "query": "SELECT run_sha AS \"__value\", substring(run_sha,1,8) || ' (' || to_char(created_at,'YYYY-MM-DD HH24:MI') || ')' AS \"__text\" FROM bench_run WHERE parser='${parser}' ORDER BY created_at DESC",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "sort": 0
+      },
+      {
+        "name": "baseline_sha",
+        "label": "Baseline commit",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "${DS_SCIENCEBEAM_BENCH}" },
+        "query": "SELECT run_sha AS \"__value\", substring(run_sha,1,8) || ' (' || to_char(created_at,'YYYY-MM-DD HH24:MI') || ')' AS \"__text\" FROM bench_run WHERE parser='${parser}' AND run_sha <> '${current_sha}' ORDER BY created_at DESC",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false,
+        "sort": 0
+      },
+      {
+        "name": "corpus",
+        "label": "Corpus",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "${DS_SCIENCEBEAM_BENCH}" },
+        "query": "SELECT DISTINCT corpus FROM bench_metric WHERE run_sha='${current_sha}' AND parser='${parser}' ORDER BY corpus",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": "%",
+        "multi": false,
+        "current": { "text": "overall", "value": "overall" }
+      },
+      {
+        "name": "metric",
+        "label": "Metric (for trend panel)",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "${DS_SCIENCEBEAM_BENCH}" },
+        "query": "SELECT DISTINCT metric FROM bench_metric WHERE parser='${parser}' ORDER BY metric",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": { "text": "title_match", "value": "title_match" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Run summary — current vs baseline",
+      "datasource": { "type": "postgres", "uid": "${DS_SCIENCEBEAM_BENCH}" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT 'current' AS label, substring(run_sha,1,8) AS sha, parser, mode, n_records, n_errors, elapsed_s, (tokens_total->>'total_tokens')::bigint AS total_tokens, (tokens_total->>'n_calls')::int AS n_llm_calls, created_at FROM bench_run WHERE run_sha='${current_sha}' AND parser='${parser}' UNION ALL SELECT 'baseline', substring(run_sha,1,8), parser, mode, n_records, n_errors, elapsed_s, (tokens_total->>'total_tokens')::bigint, (tokens_total->>'n_calls')::int, created_at FROM bench_run WHERE run_sha='${baseline_sha}' AND parser='${parser}' ORDER BY label DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "left" } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Per-metric comparison (Δ = current − baseline)",
+      "description": "Positive Δ means the current commit moved the metric up vs the baseline commit. Filter the corpus dropdown to drill in.",
+      "datasource": { "type": "postgres", "uid": "${DS_SCIENCEBEAM_BENCH}" },
+      "gridPos": { "h": 14, "w": 14, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT m.corpus, m.metric, m.system, ROUND(m.mean::numeric, 4) AS current, ROUND(b.mean::numeric, 4) AS baseline, ROUND((m.mean - b.mean)::numeric, 4) AS delta FROM bench_metric m JOIN bench_metric b USING (parser, corpus, metric, system) WHERE m.run_sha='${current_sha}' AND b.run_sha='${baseline_sha}' AND m.parser='${parser}' AND m.corpus LIKE '${corpus}' AND m.mean IS DISTINCT FROM b.mean ORDER BY abs(coalesce(m.mean - b.mean, 0)) DESC, m.corpus, m.metric, m.system"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "right" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "delta" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
+              { "id": "color", "value": { "mode": "continuous-RdYlGr" } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "type": "barchart",
+      "title": "Δ by metric (overall corpus)",
+      "datasource": { "type": "postgres", "uid": "${DS_SCIENCEBEAM_BENCH}" },
+      "gridPos": { "h": 14, "w": 10, "x": 14, "y": 6 },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT m.metric || ' [' || m.system || ']' AS metric_system, (m.mean - b.mean)::float AS delta FROM bench_metric m JOIN bench_metric b USING (parser, corpus, metric, system) WHERE m.run_sha='${current_sha}' AND b.run_sha='${baseline_sha}' AND m.parser='${parser}' AND m.corpus='overall' ORDER BY delta"
+        }
+      ],
+      "options": { "orientation": "horizontal", "showValue": "auto", "stacking": "none" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "continuous-RdYlGr" }, "custom": { "axisLabel": "Δ (current − baseline)" } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Trend: ${metric} over time",
+      "datasource": { "type": "postgres", "uid": "${DS_SCIENCEBEAM_BENCH}" },
+      "gridPos": { "h": 10, "w": 14, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT r.created_at AS time, m.system AS metric, m.mean AS value FROM bench_metric m JOIN bench_run r USING (run_sha, parser) WHERE m.parser='${parser}' AND m.corpus='${corpus}' AND m.metric='${metric}' ORDER BY r.created_at"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "showPoints": "always", "pointSize": 6 } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "LLM token cost trend",
+      "datasource": { "type": "postgres", "uid": "${DS_SCIENCEBEAM_BENCH}" },
+      "gridPos": { "h": 10, "w": 10, "x": 14, "y": 20 },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT r.created_at AS time, 'total_tokens' AS metric, (r.tokens_total->>'total_tokens')::bigint AS value FROM bench_run r WHERE r.parser='${parser}' ORDER BY r.created_at"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 60 } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Documents that changed most (current vs baseline)",
+      "description": "Per-document title_match swing between the two commits. Useful for spot-checking which records moved.",
+      "datasource": { "type": "postgres", "uid": "${DS_SCIENCEBEAM_BENCH}" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 30 },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT c.corpus, c.record_id, ROUND((c.llm_metrics->>'title_match')::numeric, 3) AS current_llm, ROUND((b.llm_metrics->>'title_match')::numeric, 3) AS baseline_llm, ROUND(((c.llm_metrics->>'title_match')::numeric - (b.llm_metrics->>'title_match')::numeric), 3) AS delta FROM bench_document c JOIN bench_document b USING (parser, record_id, corpus) WHERE c.run_sha='${current_sha}' AND b.run_sha='${baseline_sha}' AND c.parser='${parser}' AND c.corpus LIKE '${corpus}' AND (c.llm_metrics->>'title_match') IS NOT NULL AND (b.llm_metrics->>'title_match') IS NOT NULL AND (c.llm_metrics->>'title_match')::numeric <> (b.llm_metrics->>'title_match')::numeric ORDER BY abs(((c.llm_metrics->>'title_match')::numeric - (b.llm_metrics->>'title_match')::numeric)) DESC LIMIT 50"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "right" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "delta" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
+              { "id": "color", "value": { "mode": "continuous-RdYlGr" } }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "__inputs": [
+    {
+      "name": "DS_SCIENCEBEAM_BENCH",
+      "label": "sciencebeam-bench",
+      "description": "Postgres data source pointing at sciencebeam_bench database.",
+      "type": "datasource",
+      "pluginId": "postgres",
+      "pluginName": "PostgreSQL"
+    }
+  ]
+}

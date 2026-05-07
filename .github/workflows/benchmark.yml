@@ -209,6 +209,7 @@ jobs:
           BENCH_PG_DSN: ${{ secrets.BENCH_PG_DSN }}
           AZURE_PG_RG: ${{ vars.AZURE_PG_RG || 'sb-bench-rg' }}
           AZURE_PG_SERVER: ${{ vars.AZURE_PG_SERVER || 'sb-bench-pg-leon' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           RUNNER_IP=$(curl -fsSL https://api.ipify.org)
@@ -219,9 +220,11 @@ jobs:
             --start-ip-address "$RUNNER_IP" --end-ip-address "$RUNNER_IP" \
             --output none
           trap 'az postgres flexible-server firewall-rule delete -g "$AZURE_PG_RG" --name "$AZURE_PG_SERVER" --rule-name "$RULE" --yes --output none || true' EXIT
+          STARTED_AT=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq '.run_started_at // .created_at')
           uv run python -m benchmarks.export \
-            --run-dir   benchmarks/runs/${{ github.sha }} \
-            --ci-run-id ${{ github.run_id }}
+            --run-dir    benchmarks/runs/${{ github.sha }} \
+            --ci-run-id  ${{ github.run_id }} \
+            --created-at "$STARTED_AT"
 
       - name: Install CML via npm (avoids setup-cml's unauthenticated release fetch)
         run: npm install -g @dvcorg/cml
