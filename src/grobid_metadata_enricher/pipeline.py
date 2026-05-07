@@ -1776,6 +1776,35 @@ def extract_abstract_from_ocr(clean_text: str, chat: Callable[..., str]) -> str:
 
 _CONTENT_DOI_RE = re.compile(r"10\.\d{4,9}/[^\s<>\"'\\)]+", re.IGNORECASE)
 
+# DOIs that look bibliographic but reference non-citation entities. F1000-style
+# peer review reports use a `.r<digits>` suffix (e.g. 10.21956/openreseurope.X.r45404).
+_NON_CITATION_DOI_RE = re.compile(r"\.r\d+$", re.IGNORECASE)
+# Zenodo deposits are dual-use: biorxiv articles cite them as data references,
+# while ORE articles often have them as 'underlying data' deposits in the
+# article's own data-availability section. Treated as ambiguous and dropped
+# only when no standard DOI accompanies them in the same pred set.
+_AMBIGUOUS_DEPOSIT_DOI_RE = re.compile(r"/zenodo\.", re.IGNORECASE)
+
+
+def _is_citation_doi(doi: str) -> bool:
+    return not _NON_CITATION_DOI_RE.search(doi or "")
+
+
+def _is_ambiguous_deposit_doi(doi: str) -> bool:
+    return bool(_AMBIGUOUS_DEPOSIT_DOI_RE.search(doi or ""))
+
+
+def _filter_ambiguous_deposits(dois: List[str]) -> List[str]:
+    """Drop zenodo deposit DOIs unless at least one standard citation DOI is
+    present. Standalone zenodo cites are typically the article's own data
+    deposit picked up by mistake, not a true citation."""
+    if not dois:
+        return dois
+    standard = [d for d in dois if _is_citation_doi(d) and not _is_ambiguous_deposit_doi(d)]
+    if standard:
+        return dois
+    return [d for d in dois if not _is_ambiguous_deposit_doi(d)]
+
 _FIGURE_CAPTION_START_RE = re.compile(
     r"^\s*(figure|fig|figura|esquema)\s*\.?\s*(?:s\s*)?(?:\d+[A-Za-z]?|[IVX]+)\b",
     re.IGNORECASE,
@@ -3182,7 +3211,7 @@ def predict_content_fields_from_alto(
     max_tokens: int = 2000,  # pylint: disable=unused-argument
     body_sections_max_tokens: int = 2500,
     references_max_chars: int = 40000,
-    references_max_tokens: int = 4500,
+    references_max_tokens: int = 8000,
     tables_figures_max_chars: int = 110000,  # pylint: disable=unused-argument
     tables_figures_max_tokens: int = 3500,
 ) -> MetadataRecord:
@@ -3414,7 +3443,10 @@ def predict_content_fields_from_alto(
                     m = _CONTENT_DOI_RE.search(doi_candidate)
                     if m:
                         doi = m.group(0).lower().rstrip(".,;)")
-                        if require_extractive_support(doi, reference_candidate_values):
+                        if (
+                            _is_citation_doi(doi)
+                            and require_extractive_support(doi, reference_candidate_values)
+                        ):
                             new_dois.append(doi)
             supported_titles = [
                 require_extractive_support(title, reference_candidate_values)
@@ -3469,6 +3501,9 @@ def merge_content_fields(tei_content: MetadataRecord, llm_content: MetadataRecor
         if predicate is not None:
             tei_items = [i for i in tei_items if predicate(i)]
             llm_items = [i for i in llm_items if predicate(i)]
+        if key == "reference_dois":
+            tei_items = [i for i in tei_items if _is_citation_doi(i)]
+            llm_items = [i for i in llm_items if _is_citation_doi(i)]
         if key in _REFERENCE_UNION_FIELDS:
             chosen = tei_items + llm_items
         elif key in _ALTO_PREFERRED_CONTENT_FIELDS:
@@ -3482,6 +3517,8 @@ def merge_content_fields(tei_content: MetadataRecord, llm_content: MetadataRecor
             if k and k not in seen:
                 merged.append(item)
                 seen[k] = None
+        if key == "reference_dois":
+            merged = _filter_ambiguous_deposits(merged)
         out[key] = merged
     return out
 
