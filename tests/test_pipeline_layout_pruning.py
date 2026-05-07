@@ -461,6 +461,32 @@ def test_reference_section_heading_survives_repeated_furniture_pruning() -> None
     assert any(line["text"] == "References" for line in pruned)
 
 
+def test_reference_entry_start_matches_vancouver_style_author_initials() -> None:
+    # Astrophysics/Vancouver style citations start "Surname AB, Surname CD, et al.: Title".
+    # Without this match, _reference_candidate_entries merges 5+ refs per candidate
+    # because no entry-start triggers a flush, capping LLM output recall.
+    lines = [
+        _styled_line("References", page=0, y=80.0),
+        _styled_line(
+            "Abbott BP, Abbott R, Abbott TD, et al.: Observation of gravitational waves",
+            page=0,
+            y=100.0,
+        ),
+        _styled_line("from a binary black hole merger. Phys Rev Lett. 2016.", page=0, y=110.0),
+        _styled_line(
+            "Baiotti L, Rezzolla L: Binary neutron star mergers: a review of Einstein.",
+            page=0,
+            y=130.0,
+        ),
+    ]
+
+    candidates = reference_candidate_texts(lines)
+
+    assert len(candidates) == 2
+    assert candidates[0].startswith("Abbott BP")
+    assert candidates[1].startswith("Baiotti L")
+
+
 def test_reference_start_index_picks_earliest_when_heading_repeats() -> None:
     from grobid_metadata_enricher.pipeline import _reference_start_index
     lines = [
