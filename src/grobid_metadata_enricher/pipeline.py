@@ -2272,6 +2272,35 @@ def build_reference_candidate_evidence(
     return "\n".join(parts)
 
 
+def build_reference_candidate_evidence_chunks(
+    lines: Sequence[LayoutLine],
+    *,
+    max_candidates: int = 500,
+    chunk_size: int = 50,
+) -> List[str]:
+    """Split reference candidates into chunks the LLM can process exhaustively.
+
+    Long bibliographies (100+ refs) trigger model output truncation well below
+    the configured token cap: the model returns ~25 entries and stops. Splitting
+    the candidate list into smaller chunks per LLM call lets each call cover
+    its slice exhaustively, and the union recovers the full bibliography."""
+    entries = _reference_candidate_entries(lines, max_candidates=max_candidates)
+    chunks: List[str] = []
+    for start in range(0, len(entries), chunk_size):
+        slice_entries = entries[start:start + chunk_size]
+        parts: List[str] = []
+        for offset, (text, line) in enumerate(slice_entries):
+            entry = (
+                f"[{start + offset + 1}] page={_layout_line_page(line) + 1} "
+                f"y={float(line.get('y', 0.0) or 0.0):.1f} "
+                f"x={float(line.get('x', 0.0) or 0.0):.1f} | {text}"
+            )
+            parts.append(entry)
+        if parts:
+            chunks.append("\n".join(parts))
+    return chunks
+
+
 _BODY_SECTION_KNOWN_RE = re.compile(
     r"^\s*(?:[\dIVXivx]+(?:\.\d+)*[\.\)]?\s+)?"
     r"(?:aims?|introduction|background|overview|results?|discussion|conclusions?|methods?|"
@@ -3265,6 +3294,17 @@ def predict_content_fields_from_alto(
         ref_content_lines,
         max_chars=references_max_chars,
     )
+    # Long bibliographies trigger model output truncation: the LLM emits ~25
+    # refs and stops well below the token budget. Chunking the candidate list
+    # lets each call cover its slice exhaustively. Threshold tuned so 25-50-ref
+    # docs still go through one call (no extra latency or cost), and 100+-ref
+    # docs split into chunks of 50.
+    reference_candidate_chunks: List[str] = []
+    if len(reference_candidate_values) > 60:
+        reference_candidate_chunks = build_reference_candidate_evidence_chunks(
+            ref_content_lines,
+            chunk_size=50,
+        )
     empty: MetadataRecord = {
         "body_sections": [],
         "figure_captions": [],
@@ -3375,21 +3415,29 @@ def predict_content_fields_from_alto(
             )
             if len(table_candidate_text.strip()) > 20 else None
         )
-        refs_fut = (
-            _content_ex.submit(
+        refs_futs: List[Any] = []
+        if reference_candidate_chunks:
+            for chunk_text in reference_candidate_chunks:
+                refs_futs.append(_content_ex.submit(
+                    _call,
+                    REFERENCES_EXTRACTION_PROMPT,
+                    chunk_text,
+                    references_max_tokens,
+                    "CONTENT_REFERENCES",
+                ))
+        elif len(reference_candidate_text.strip()) > 20:
+            refs_futs.append(_content_ex.submit(
                 _call,
                 REFERENCES_EXTRACTION_PROMPT,
                 reference_candidate_text,
                 references_max_tokens,
                 "CONTENT_REFERENCES",
-            )
-            if len(reference_candidate_text.strip()) > 20 else None
-        )
+            ))
         body_payload = body_fut.result() if body_fut is not None else None
         legacy_body_payload = legacy_body_fut.result() if legacy_body_fut is not None else None
         figure_payload = figure_fut.result() if figure_fut is not None else None
         table_payload = table_fut.result() if table_fut is not None else None
-        refs_payload = refs_fut.result() if refs_fut is not None else None
+        refs_payloads = [fut.result() for fut in refs_futs]
 
     _add_body_payload(body_payload)
     _add_body_payload(legacy_body_payload)
@@ -3427,7 +3475,9 @@ def predict_content_fields_from_alto(
             ]
             _dedupe_table_add(table_captions, _filter(supported_tables, _is_table_caption))
 
-    if refs_payload:
+    for refs_payload in refs_payloads:
+        if not refs_payload:
+            continue
         refs = refs_payload.get("references") or []
         if isinstance(refs, list):
             new_titles: List[str] = []
