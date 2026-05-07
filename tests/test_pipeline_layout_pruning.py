@@ -171,16 +171,35 @@ def test_predict_content_fields_from_alto_sends_pruned_text_to_content_llms() ->
     assert len(seen) == 5
 
 
-def test_crossref_enrichment_does_not_expand_existing_reference_set() -> None:
+def test_crossref_enrichment_per_bibl_skips_when_doi_present(tmp_path: Path) -> None:
+    """Per-bibl gate: biblStructs that already have <idno type='doi'> get skipped;
+    biblStructs without a DOI go to Crossref. The pred's existing reference set
+    is preserved either way."""
+    tei_path = tmp_path / "doc.tei.xml"
+    tei_path.write_text(
+        """
+        <TEI xmlns="http://www.tei-c.org/ns/1.0">
+          <text><back><div><listBibl>
+            <biblStruct>
+              <analytic>
+                <title level="a">Already-resolved cited work</title>
+              </analytic>
+              <idno type="doi">10.1234/existing</idno>
+            </biblStruct>
+          </listBibl></div></back></text>
+        </TEI>
+        """,
+        encoding="utf-8",
+    )
     pred = {
-        "reference_titles": ["Useful cited work"],
+        "reference_titles": ["Already-resolved cited work"],
         "reference_dois": ["10.1234/existing"],
     }
     crossref_client = Mock()
 
-    result = enrich_references_with_crossref(pred, Path("missing.tei.xml"), crossref_client=crossref_client)
+    result = enrich_references_with_crossref(pred, tei_path, crossref_client=crossref_client)
 
-    assert result is pred
+    assert result["reference_dois"] == ["10.1234/existing"]
     crossref_client.lookup.assert_not_called()
 
 

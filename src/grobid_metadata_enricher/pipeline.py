@@ -3401,23 +3401,24 @@ def enrich_references_with_crossref(
     pred: MetadataRecord,
     tei_path: Path,
     crossref_client: Any = None,
-    max_lookups: int = 80,
+    max_lookups: int = 40,
     max_workers: int = 5,
 ) -> MetadataRecord:
-    """Augment empty reference fields by looking up GROBID biblStructs via Crossref.
+    """Augment reference fields by looking up GROBID biblStructs via Crossref.
 
-    Crossref is useful as a fallback when the parser found no references, but
-    adding DOI guesses on top of an existing TEI/LLM bibliography inflates the
-    predicted set and hurts F1 precision. Keep existing parser/LLM references as
-    the authoritative set, and only query Crossref when both reference fields are
-    empty.
+    Per-biblStruct: skip biblStructs that already have <idno type='doi'>; for
+    biblStructs lacking a DOI, look up Crossref by title+author+year. The
+    CrossrefClient enforces MIN_TITLE_JACCARD on the returned title to reject
+    generic-title collisions. Cap at max_lookups per doc to bound API load.
+
+    Previously gated all-or-nothing (only fired when pred had zero refs); that
+    suppressed Crossref recovery on ORE docs where the LLM kept 1-26 of 50-166
+    gold DOIs. Per-bibl gating preserves precision via the title-jaccard floor
+    while letting Crossref fill the long tail.
     """
     import xml.etree.ElementTree as _ET
 
     from .crossref import CrossrefClient as _CrossrefClient
-
-    if pred.get("reference_titles") or pred.get("reference_dois"):
-        return pred
 
     if crossref_client is None:
         crossref_client = _CrossrefClient()

@@ -204,6 +204,23 @@ def _caption_set_pr(gold_captions: List[str], pred_captions: List[str]) -> PRTri
     )
 
 
+_REF_TITLE_RETRIEVAL_TAIL_RE = re.compile(
+    r"\.\s*(retrieved|accessed|consultado|consultada|opgehaald|recuperado|abgerufen|"
+    r"obtenido|extraido|cited|disponivel|disponible|available\s+at|url:?)\b.*$",
+    re.IGNORECASE,
+)
+_REF_TITLE_VERSION_TAIL_RE = re.compile(r"\.\s*[a-z]\d+(?:[-/]\d+)?\s*$", re.IGNORECASE)
+
+
+def _normalize_ref_title(text: str) -> str:
+    value = (text or "").strip()
+    if not value:
+        return ""
+    value = _REF_TITLE_RETRIEVAL_TAIL_RE.sub("", value)
+    value = _REF_TITLE_VERSION_TAIL_RE.sub("", value)
+    return re.sub(r"\s+", " ", value).strip().rstrip(".").strip()
+
+
 def _reference_pr(gold: Dict[str, Any], predicted: Dict[str, Any]) -> PRTriple:
     gold_dois = {normalize_identifier(d) for d in (gold.get("reference_dois") or []) if d}
     pred_dois = {normalize_identifier(d) for d in (predicted.get("reference_dois") or []) if d}
@@ -211,10 +228,12 @@ def _reference_pr(gold: Dict[str, Any], predicted: Dict[str, Any]) -> PRTriple:
     pred_dois.discard("")
     if gold_dois and pred_dois:
         return _set_pr(gold_dois, pred_dois)
-    gold_titles = [t for t in (gold.get("reference_titles") or []) if t]
+    gold_titles = [_normalize_ref_title(t) for t in (gold.get("reference_titles") or []) if t]
+    gold_titles = [t for t in gold_titles if t]
     if not gold_titles:
         return (None, None, None)
-    pred_titles = [t for t in (predicted.get("reference_titles") or []) if t]
+    pred_titles = [_normalize_ref_title(t) for t in (predicted.get("reference_titles") or []) if t]
+    pred_titles = [t for t in pred_titles if t]
     return _section_head_pr(gold_titles, pred_titles, threshold=0.5)
 
 
