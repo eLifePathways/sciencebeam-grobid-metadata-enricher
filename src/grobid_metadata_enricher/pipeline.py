@@ -2141,9 +2141,13 @@ _REFERENCE_HEADING_RE = re.compile(
 )
 _REFERENCE_ENTRY_START_RE = re.compile(
     r"^\s*(?:"
+    # [1] or 1. / 1) numbered references
     r"\[\s*\d+\s*\]|"
     r"\d{1,3}[\.\)]\s+|"
-    r"[A-ZÁÉÍÓÚÃÕÇÑ][A-Za-zÀ-ÖØ-öø-ÿ'’`-]{1,40},\s+(?:[A-Z]\.|[A-ZÁÉÍÓÚÃÕÇÑ][A-Za-zÀ-ÖØ-öø-ÿ'’`-]+)"
+    # Surname, J. or Surname, John style (APA-like)
+    r"[A-ZÁÉÍÓÚÃÕÇÑ][A-Za-zÀ-ÖØ-öø-ÿ'’`-]{1,40},\s+(?:[A-Z]\.|[A-ZÁÉÍÓÚÃÕÇÑ][A-Za-zÀ-ÖØ-öø-ÿ'’`-]+)|"
+    # Surname AB, ... style (Vancouver/AMA-like, common in physics/astrophysics)
+    r"[A-ZÁÉÍÓÚÃÕÇÑ][A-Za-zÀ-ÖØ-öø-ÿ'’`-]{1,40}\s+[A-Z]{1,5}(?:\s+(?:I{2,3}|Jr|Sr))?[,:]\s+\S"
     r")"
 )
 _REFERENCE_SECTION_STOP_RE = re.compile(
