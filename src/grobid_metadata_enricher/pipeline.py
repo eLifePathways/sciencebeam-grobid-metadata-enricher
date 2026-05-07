@@ -1778,8 +1778,9 @@ _CONTENT_DOI_RE = re.compile(r"10\.\d{4,9}/[^\s<>\"'\\)]+", re.IGNORECASE)
 
 # DOIs that look bibliographic but reference non-citation entities. F1000-style
 # peer review reports use a `.r<digits>` suffix (e.g. 10.21956/openreseurope.X.r45404).
-# Zenodo records are usually data/software deposits, not the cited articles.
-_NON_CITATION_DOI_RE = re.compile(r"(?:\.r\d+$|/zenodo\.)", re.IGNORECASE)
+# Zenodo deposits are NOT filtered — biorxiv articles often cite them as data
+# references and the gold reference_dois include them.
+_NON_CITATION_DOI_RE = re.compile(r"\.r\d+$", re.IGNORECASE)
 
 
 def _is_citation_doi(doi: str) -> bool:
