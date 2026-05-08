@@ -16,6 +16,10 @@ PORT ?= 8000
 BENCHMARK_MODE ?= smoke
 BENCHMARK_RUN  ?= local
 PARSER         ?= grobid
+BENCHMARK_SPLIT ?= train
+TRAIN_BENCHMARK_CONFIG ?= benchmarks/bench-train.yaml
+VALIDATION_BENCHMARK_CONFIG ?= benchmarks/bench.yaml
+BENCHMARK_CONFIG ?= $(if $(filter $(BENCHMARK_SPLIT),train),$(TRAIN_BENCHMARK_CONFIG),$(VALIDATION_BENCHMARK_CONFIG))
 
 SHOW_RUN    ?= train/local-grobid
 SHOW_CORPUS ?=
@@ -230,30 +234,39 @@ benchmark-train-rescore-grobid:
 	$(MAKE) benchmark-train-grobid
 
 
-benchmark-train-predict-sciencebeam-parser: sciencebeam-start
+.benchmark-predict-sciencebeam-parser: sciencebeam-start
 	docker compose --profile benchmark run --rm \
 		-e PARSER=sciencebeam \
 		-e GROBID_URL=http://sciencebeam-parser:8070/api \
 		benchmark \
 		python -m benchmarks.predict \
-			--config benchmarks/bench-train.yaml \
+			--config "$(BENCHMARK_CONFIG)" \
 			--mode   $(BENCHMARK_MODE) \
 			--parser sciencebeam \
-			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-sciencebeam-parser
+			--out    "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-sciencebeam-parser"
 
-benchmark-train-score-sciencebeam-parser:
+.benchmark-score-sciencebeam-parser:
 	docker compose --profile benchmark run --rm --no-deps benchmark \
 		python -m benchmarks.score \
-			--run    benchmarks/runs/train/$(BENCHMARK_RUN)-sciencebeam-parser \
-			--config benchmarks/bench-train.yaml \
-			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-sciencebeam-parser/report.md
+			--run    "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-sciencebeam-parser" \
+			--config "$(BENCHMARK_CONFIG)" \
+			--out    "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-sciencebeam-parser/report.md"
 	@echo "=== ScienceBeam Parser benchmark ==="
-	@cat benchmarks/runs/train/$(BENCHMARK_RUN)-sciencebeam-parser/report.md
+	@cat "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-sciencebeam-parser/report.md"
 
-benchmark-train-sciencebeam-parser: \
-	benchmark-build \
-	benchmark-train-predict-sciencebeam-parser \
-	benchmark-train-score-sciencebeam-parser
+benchmark-train-sciencebeam-parser: benchmark-build
+	$(MAKE) \
+		BENCHMARK_SPLIT=train \
+		BENCHMARK_CONFIG=$(TRAIN_BENCHMARK_CONFIG) \
+		.benchmark-predict-sciencebeam-parser \
+		.benchmark-score-sciencebeam-parser
+
+benchmark-validation-sciencebeam-parser: benchmark-build
+	$(MAKE) \
+		BENCHMARK_SPLIT=validation \
+		BENCHMARK_CONFIG=$(VALIDATION_BENCHMARK_CONFIG) \
+		.benchmark-predict-sciencebeam-parser \
+		.benchmark-score-sciencebeam-parser
 
 
 # Find and export regression/improvement cases for a given metric and corpus.
