@@ -1,0 +1,299 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+[hidden] { display: none !important; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: #222;
+  background: #f8f9fa;
+  margin: 0;
+  padding: 0;
+}
+
+header {
+  background: #fff;
+  border-bottom: 1px solid #e0e0e0;
+  padding: 1rem 2rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+main {
+  max-width: 800px;
+  margin: 2rem auto;
+  padding: 0 1.5rem;
+}
+
+/* Upload section */
+
+#upload-section {
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  padding: 2rem;
+}
+
+#drop-zone {
+  border: 2px dashed #c0c0c0;
+  border-radius: 8px;
+  padding: 2.5rem 2rem;
+  text-align: center;
+  color: #666;
+  transition: border-color 0.2s, background 0.2s, color 0.2s;
+}
+
+#drop-zone:hover,
+#drop-zone.dragover {
+  border-color: #1a6eb5;
+  background: #f0f6ff;
+  color: #1a6eb5;
+}
+
+#drop-zone.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+#drop-zone svg {
+  display: block;
+  margin: 0 auto 0.75rem;
+  color: #aaa;
+  transition: color 0.2s;
+}
+
+#drop-zone:hover svg,
+#drop-zone.dragover svg {
+  color: #1a6eb5;
+}
+
+#drop-label {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.or-text {
+  margin: 0.5rem 0;
+  font-size: 0.875rem;
+  color: #999;
+}
+
+.browse-btn {
+  display: inline-block;
+  padding: 0.4rem 1.1rem;
+  background: #fff;
+  border: 1px solid #1a6eb5;
+  border-radius: 5px;
+  color: #1a6eb5;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.browse-btn:hover {
+  background: #f0f6ff;
+}
+
+#file-input {
+  display: none;
+}
+
+#drop-error {
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  color: #c0392b;
+}
+
+#file-name {
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  color: #444;
+}
+
+#submit-btn {
+  margin-top: 1.25rem;
+  padding: 0.6rem 1.5rem;
+  background: #1a6eb5;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+#submit-btn:hover:not(:disabled) {
+  background: #155a96;
+}
+
+#submit-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Status */
+
+#status-section {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  padding: 1.25rem 1.5rem;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  color: #444;
+}
+
+#status-section p {
+  margin: 0;
+}
+
+.spinner {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: 3px solid #e0e0e0;
+  border-top-color: #1a6eb5;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Error */
+
+#error-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  padding: 1rem 1.25rem;
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  border-radius: 8px;
+  color: #991b1b;
+}
+
+#error-message {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+#error-dismiss {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #991b1b;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+#error-dismiss:hover {
+  background: #fee2e2;
+}
+
+/* Results */
+
+#results-section {
+  margin-top: 1.5rem;
+  padding: 2rem;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+}
+
+#results-section h2 {
+  margin: 0 0 1.5rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #444;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid #eee;
+}
+
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 0.25rem 1rem;
+  align-items: center;
+}
+
+.field label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #555;
+  text-align: right;
+}
+
+.field-textarea,
+.field-list {
+  align-items: start;
+}
+
+.field-textarea label,
+.field-list label {
+  padding-top: 0.45rem;
+}
+
+.field input[type="text"],
+.field textarea {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #d0d0d0;
+  border-radius: 5px;
+  font-size: 0.875rem;
+  color: #333;
+  background: #f5f5f5;
+  font-family: inherit;
+  resize: none;
+  overflow: hidden;
+}
+
+#f-abstract {
+  resize: vertical;
+  overflow: auto;
+}
+
+.list-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.list-inputs textarea {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #d0d0d0;
+  border-radius: 5px;
+  font-size: 0.875rem;
+  color: #333;
+  background: #f5f5f5;
+  font-family: inherit;
+  resize: none;
+  overflow: hidden;
+}
+
+.list-inputs textarea:disabled {
+  color: #aaa;
+  font-style: italic;
+}
