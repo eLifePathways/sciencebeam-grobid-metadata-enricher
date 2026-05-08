@@ -215,6 +215,7 @@ benchmark-train-score-grobid:
 			--run    benchmarks/runs/train/$(BENCHMARK_RUN)-grobid \
 			--config benchmarks/bench-train.yaml \
 			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/report.md
+	@echo "=== GROBID benchmark ==="
 	@cat benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/report.md
 
 benchmark-train-grobid: \
@@ -246,6 +247,7 @@ benchmark-train-score-sciencebeam-parser:
 			--run    benchmarks/runs/train/$(BENCHMARK_RUN)-sciencebeam-parser \
 			--config benchmarks/bench-train.yaml \
 			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-sciencebeam-parser/report.md
+	@echo "=== ScienceBeam Parser benchmark ==="
 	@cat benchmarks/runs/train/$(BENCHMARK_RUN)-sciencebeam-parser/report.md
 
 benchmark-train-sciencebeam-parser: \
