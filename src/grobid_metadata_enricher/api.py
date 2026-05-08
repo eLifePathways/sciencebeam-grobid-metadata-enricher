@@ -7,6 +7,7 @@ from typing import Any, AsyncGenerator, Callable, Optional  # noqa: F401
 
 from fastapi import APIRouter, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from .clients import (
     DEFAULT_GROBID_TIMEOUT,
@@ -32,6 +33,8 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
 
+_STATIC_DIR = Path(__file__).parent / "static"
+
 app = FastAPI(
     title="ScienceBeam V2 API",
     docs_url="/api/docs",
@@ -39,6 +42,7 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
     lifespan=_lifespan,
 )
+app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 router = APIRouter(prefix="/api")
 _grobid_url: str = DEFAULT_GROBID_URL
 _grobid_timeout: int = DEFAULT_GROBID_TIMEOUT
@@ -64,16 +68,7 @@ _chat: Optional[Callable[..., str]] = _make_chat()
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def index() -> HTMLResponse:
-    return HTMLResponse(
-        content="""<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><title>ScienceBeam V2</title></head>
-<body>
-  <h1>ScienceBeam V2</h1>
-  <p><a href="/api/docs">Try it out in the API docs</a></p>
-</body>
-</html>"""
-    )
+    return HTMLResponse(content=(_STATIC_DIR / "index.html").read_text(encoding="utf-8"))
 
 
 @router.get("/health")
