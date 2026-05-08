@@ -128,15 +128,16 @@ grobid-start:
 	docker compose up -d --wait grobid
 
 
-benchmark-build:
-	docker compose --profile benchmark build benchmark
-
 sciencebeam-start:
 	docker compose --profile sciencebeam up -d --wait sciencebeam-parser
 	@echo "ScienceBeam Parser ready at http://localhost:8071/api"
 
 sciencebeam-stop:
 	docker compose --profile sciencebeam stop sciencebeam-parser
+
+
+benchmark-build:
+	docker compose --profile benchmark build benchmark
 
 
 .benchmark-predict:
