@@ -217,13 +217,41 @@ benchmark-train-score-grobid:
 			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/report.md
 	@cat benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/report.md
 
-benchmark-train-grobid: benchmark-build benchmark-train-predict-grobid benchmark-train-score-grobid
+benchmark-train-grobid: \
+	benchmark-build \
+	benchmark-train-predict-grobid \
+	benchmark-train-score-grobid
 
 # Force a full re-predict + re-score (use when adding new score fields requires
 # fresh per-document rows, e.g. after adding title_edit_sim).
 benchmark-train-rescore-grobid:
 	rm -f benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/per_document.jsonl
 	$(MAKE) benchmark-train-grobid
+
+
+benchmark-train-predict-sciencebeam-parser: sciencebeam-start
+	docker compose --profile benchmark run --rm \
+		-e PARSER=sciencebeam \
+		-e GROBID_URL=http://sciencebeam-parser:8070/api \
+		benchmark \
+		python -m benchmarks.predict \
+			--config benchmarks/bench-train.yaml \
+			--mode   $(BENCHMARK_MODE) \
+			--parser sciencebeam \
+			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-sciencebeam-parser
+
+benchmark-train-score-sciencebeam-parser:
+	docker compose --profile benchmark run --rm --no-deps benchmark \
+		python -m benchmarks.score \
+			--run    benchmarks/runs/train/$(BENCHMARK_RUN)-sciencebeam-parser \
+			--config benchmarks/bench-train.yaml \
+			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-sciencebeam-parser/report.md
+	@cat benchmarks/runs/train/$(BENCHMARK_RUN)-sciencebeam-parser/report.md
+
+benchmark-train-sciencebeam-parser: \
+	benchmark-build \
+	benchmark-train-predict-sciencebeam-parser \
+	benchmark-train-score-sciencebeam-parser
 
 
 # Find and export regression/improvement cases for a given metric and corpus.
