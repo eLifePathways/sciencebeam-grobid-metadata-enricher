@@ -130,80 +130,12 @@ grobid-start:
 benchmark-build:
 	docker compose --profile benchmark build benchmark
 
-# Run benchmark tests via docker compose (Dockerfile.bench bundles pdfalto).
-# Modes: smoke (25 docs/corpus, fast) or full (all docs).
-# Override with: make benchmark BENCHMARK_MODE=full
-# Override run dir with: make benchmark BENCHMARK_RUN=my-run
-benchmark: benchmark-build
-	@if [ "$(PARSER)" = "sciencebeam" ]; then \
-		docker compose --profile sciencebeam up -d --wait sciencebeam-parser; \
-	else \
-		docker compose up -d --wait grobid; \
-	fi
-	docker compose --profile benchmark run --rm \
-		-e PARSER=$(PARSER) \
-		-e GROBID_URL=$$( [ "$(PARSER)" = "sciencebeam" ] && echo http://sciencebeam-parser:8070/api || echo http://grobid:8070/api ) \
-		benchmark \
-		python -m benchmarks.predict \
-			--config benchmarks/bench.yaml \
-			--mode   $(BENCHMARK_MODE) \
-			--parser $(PARSER) \
-			--out    benchmarks/runs/$(BENCHMARK_RUN)
-	docker compose --profile benchmark run --rm --no-deps benchmark \
-		python -m benchmarks.score \
-			--run    benchmarks/runs/$(BENCHMARK_RUN) \
-			--config benchmarks/bench.yaml \
-			--out    benchmarks/runs/$(BENCHMARK_RUN)/report.md
-	@cat benchmarks/runs/$(BENCHMARK_RUN)/report.md
-
-
 sciencebeam-start:
 	docker compose --profile sciencebeam up -d --wait sciencebeam-parser
 	@echo "ScienceBeam Parser ready at http://localhost:8071/api"
 
 sciencebeam-stop:
 	docker compose --profile sciencebeam stop sciencebeam-parser
-
-
-# Cross-parser benchmark: runs the smoke benchmark twice (grobid then
-# sciencebeam) into sibling run dirs so report.md outputs can be diffed
-# directly. Outputs land in benchmarks/runs/$(BENCHMARK_RUN)-grobid and
-# benchmarks/runs/$(BENCHMARK_RUN)-sciencebeam.
-benchmark-cross-parser: grobid-start benchmark-build sciencebeam-start
-	docker compose --profile benchmark run --rm \
-		-e PARSER=grobid \
-		-e GROBID_URL=http://grobid:8070/api \
-		benchmark \
-		python -m benchmarks.predict \
-			--config benchmarks/bench.yaml \
-			--mode   $(BENCHMARK_MODE) \
-			--parser grobid \
-			--out    benchmarks/runs/$(BENCHMARK_RUN)-grobid
-	docker compose --profile benchmark run --rm --no-deps \
-		benchmark \
-		python -m benchmarks.score \
-			--run    benchmarks/runs/$(BENCHMARK_RUN)-grobid \
-			--config benchmarks/bench.yaml \
-			--out    benchmarks/runs/$(BENCHMARK_RUN)-grobid/report.md
-	docker compose --profile benchmark run --rm \
-		-e PARSER=sciencebeam \
-		-e GROBID_URL=http://sciencebeam-parser:8070/api \
-		benchmark \
-		python -m benchmarks.predict \
-			--config benchmarks/bench.yaml \
-			--mode   $(BENCHMARK_MODE) \
-			--parser sciencebeam \
-			--out    benchmarks/runs/$(BENCHMARK_RUN)-sciencebeam
-	docker compose --profile benchmark run --rm --no-deps \
-		benchmark \
-		python -m benchmarks.score \
-			--run    benchmarks/runs/$(BENCHMARK_RUN)-sciencebeam \
-			--config benchmarks/bench.yaml \
-			--out    benchmarks/runs/$(BENCHMARK_RUN)-sciencebeam/report.md
-	@echo "=== GROBID benchmark ==="
-	@cat benchmarks/runs/$(BENCHMARK_RUN)-grobid/report.md
-	@echo "=== ScienceBeam Parser benchmark ==="
-	@cat benchmarks/runs/$(BENCHMARK_RUN)-sciencebeam/report.md
 
 
 benchmark-train-predict-grobid: grobid-start
