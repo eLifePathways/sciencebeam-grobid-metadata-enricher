@@ -4,7 +4,7 @@
         benchmark-build benchmark benchmark-train-predict benchmark-train-score benchmark-train \
         sciencebeam-start sciencebeam-stop sciencebeam-patch-figure-model benchmark-cross-parser \
         show-regressions show-improvements \
-        benchmark-train-predict-grobid benchmark-train-score-grobid benchmark-train-grobid benchmark-train-rescore-grobid
+        benchmark-train-grobid benchmark-validation-grobid benchmark-train-rescore-grobid
 
 -include .env
 export
@@ -20,6 +20,7 @@ BENCHMARK_SPLIT ?= train
 TRAIN_BENCHMARK_CONFIG ?= benchmarks/bench-train.yaml
 VALIDATION_BENCHMARK_CONFIG ?= benchmarks/bench.yaml
 BENCHMARK_CONFIG ?= $(if $(filter $(BENCHMARK_SPLIT),train),$(TRAIN_BENCHMARK_CONFIG),$(VALIDATION_BENCHMARK_CONFIG))
+unexport BENCHMARK_CONFIG
 
 SHOW_RUN    ?= train/local-grobid
 SHOW_CORPUS ?=
@@ -138,67 +139,50 @@ sciencebeam-stop:
 	docker compose --profile sciencebeam stop sciencebeam-parser
 
 
-benchmark-train-predict-grobid: grobid-start
-	docker compose --profile benchmark run --rm benchmark \
-		python -m benchmarks.predict \
-			--config benchmarks/bench-train.yaml \
-			--mode   $(BENCHMARK_MODE) \
-			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-grobid
-
-benchmark-train-score-grobid:
-	docker compose --profile benchmark run --rm --no-deps benchmark \
-		python -m benchmarks.score \
-			--run    benchmarks/runs/train/$(BENCHMARK_RUN)-grobid \
-			--config benchmarks/bench-train.yaml \
-			--out    benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/report.md
-	@echo "=== GROBID benchmark ==="
-	@cat benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/report.md
-
-benchmark-train-grobid: \
-	benchmark-build \
-	benchmark-train-predict-grobid \
-	benchmark-train-score-grobid
-
-# Force a full re-predict + re-score (use when adding new score fields requires
-# fresh per-document rows, e.g. after adding title_edit_sim).
-benchmark-train-rescore-grobid:
-	rm -f benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/per_document.jsonl
-	$(MAKE) benchmark-train-grobid
-
-
-.benchmark-predict-sciencebeam-parser: sciencebeam-start
+.benchmark-predict:
+	@if [ "$(PARSER)" = "sciencebeam" ]; then \
+		$(MAKE) sciencebeam-start; \
+	else \
+		$(MAKE) grobid-start; \
+	fi
 	docker compose --profile benchmark run --rm \
-		-e PARSER=sciencebeam \
-		-e GROBID_URL=http://sciencebeam-parser:8070/api \
+		-e PARSER=$(PARSER) \
+		-e GROBID_URL=$$( [ "$(PARSER)" = "sciencebeam" ] && echo http://sciencebeam-parser:8070/api || echo http://grobid:8070/api ) \
 		benchmark \
 		python -m benchmarks.predict \
 			--config "$(BENCHMARK_CONFIG)" \
 			--mode   $(BENCHMARK_MODE) \
-			--parser sciencebeam \
-			--out    "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-sciencebeam-parser"
+			--parser $(PARSER) \
+			--out    "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-$(PARSER)"
 
-.benchmark-score-sciencebeam-parser:
+.benchmark-score:
 	docker compose --profile benchmark run --rm --no-deps benchmark \
 		python -m benchmarks.score \
-			--run    "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-sciencebeam-parser" \
+			--run    "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-$(PARSER)" \
 			--config "$(BENCHMARK_CONFIG)" \
-			--out    "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-sciencebeam-parser/report.md"
-	@echo "=== ScienceBeam Parser benchmark ==="
-	@cat "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-sciencebeam-parser/report.md"
+			--out    "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-$(PARSER)/report.md"
+	@echo "=== $(PARSER) benchmark ==="
+	@cat "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-$(PARSER)/report.md"
+
+
+benchmark-train-grobid: benchmark-build
+	$(MAKE) PARSER=grobid BENCHMARK_SPLIT=train .benchmark-predict .benchmark-score
+
+benchmark-validation-grobid: benchmark-build
+	$(MAKE) PARSER=grobid BENCHMARK_SPLIT=validation .benchmark-predict .benchmark-score
+
+# Force a full re-predict + re-score (use when adding new score fields requires
+# fresh per-document rows, e.g. after adding title_edit_sim).
+benchmark-train-rescore-grobid:
+	rm -f "benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/per_document.jsonl"
+	$(MAKE) benchmark-train-grobid
+
 
 benchmark-train-sciencebeam-parser: benchmark-build
-	$(MAKE) \
-		BENCHMARK_SPLIT=train \
-		BENCHMARK_CONFIG=$(TRAIN_BENCHMARK_CONFIG) \
-		.benchmark-predict-sciencebeam-parser \
-		.benchmark-score-sciencebeam-parser
+	$(MAKE) PARSER=sciencebeam BENCHMARK_SPLIT=train .benchmark-predict .benchmark-score
 
 benchmark-validation-sciencebeam-parser: benchmark-build
-	$(MAKE) \
-		BENCHMARK_SPLIT=validation \
-		BENCHMARK_CONFIG=$(VALIDATION_BENCHMARK_CONFIG) \
-		.benchmark-predict-sciencebeam-parser \
-		.benchmark-score-sciencebeam-parser
+	$(MAKE) PARSER=sciencebeam BENCHMARK_SPLIT=validation .benchmark-predict .benchmark-score
 
 
 # Find and export regression/improvement cases for a given metric and corpus.
