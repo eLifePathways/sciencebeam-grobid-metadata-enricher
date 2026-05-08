@@ -265,7 +265,13 @@ main {
   color: #333;
   background: #f5f5f5;
   font-family: inherit;
+  resize: none;
+  overflow: hidden;
+}
+
+#f-abstract {
   resize: vertical;
+  overflow: auto;
 }
 
 .list-inputs {
@@ -274,7 +280,7 @@ main {
   gap: 4px;
 }
 
-.list-inputs input[type="text"] {
+.list-inputs textarea {
   width: 100%;
   padding: 0.4rem 0.6rem;
   border: 1px solid #d0d0d0;
@@ -283,9 +289,11 @@ main {
   color: #333;
   background: #f5f5f5;
   font-family: inherit;
+  resize: none;
+  overflow: hidden;
 }
 
-.list-inputs input:disabled {
+.list-inputs textarea:disabled {
   color: #aaa;
   font-style: italic;
 }

@@ -65,9 +65,9 @@ async function onSubmit() {
 
     try {
         const data = await fetchTransform(selectedFile);
-        populateResults(data);
         statusSection.hidden = true;
         resultsSection.hidden = false;
+        populateResults(data);
         resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (err) {
         statusSection.hidden = true;
@@ -108,9 +108,20 @@ async function fetchTransform(file) {
     return response.json();
 }
 
+function autoHeight(el) {
+    el.style.height = 'auto';
+    el.style.height = (el.scrollHeight + el.offsetHeight - el.clientHeight) + 'px';
+}
+
+function setTextarea(id, value) {
+    const el = document.getElementById(id);
+    el.value = value || '';
+    autoHeight(el);
+}
+
 function populateResults(data) {
-    document.getElementById('f-title').value = data.title || '';
-    document.getElementById('f-abstract').value = data.abstract || '';
+    setTextarea('f-title', data.title);
+    setTextarea('f-abstract', data.abstract);
     document.getElementById('f-publisher').value = data.publisher || '';
     document.getElementById('f-date').value = data.date || '';
     document.getElementById('f-language').value = data.language || '';
@@ -139,11 +150,12 @@ function populateList(fieldId, items) {
     }
 
     items.forEach((item) => {
-        const input = document.createElement('input');
-        input.type = 'text';
+        const input = document.createElement('textarea');
+        input.rows = 1;
         input.value = item;
         input.readOnly = true;
         container.appendChild(input);
+        autoHeight(input);
     });
 }
 
