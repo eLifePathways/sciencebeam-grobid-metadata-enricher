@@ -83,6 +83,25 @@ _STAGE_TO_METRIC_GROUP: Dict[str, str] = {
 _TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "reasoning_tokens")
 
 
+def _describe_client(client: Union[AoaiPool, OpenAIClient]) -> Dict[str, Any]:
+    """Return a serialisable description of the LLM client for run_record.json.
+    Captures which model/deployment(s) actually served the benchmark so the
+    written report can name the LLM that produced the metrics."""
+    if isinstance(client, OpenAIClient):
+        return {
+            "provider": "openai",
+            "model": client.model,
+            "base_url": client.base_url,
+        }
+    deployments = sorted({backend.deployment for backend in client.backends})
+    return {
+        "provider": "azure_openai",
+        "deployments": deployments,
+        "n_backends": len(client.backends),
+        "routing": client.routing,
+    }
+
+
 def _benchmark_paths(row: Dict[str, str], out_dir: Path, cfg: Dict[str, Any]) -> Dict[str, Path]:
     parser = cfg["grobid"].get("parser", DEFAULT_PARSER)
     corpus_out = out_dir / row["corpus"]
@@ -511,6 +530,7 @@ def main() -> None:
             "concurrency": cfg["llm"].get("concurrency"),
             "routing": cfg["llm"].get("routing") or os.getenv("AOAI_POOL_ROUTING", "round_robin"),
             "doc_concurrency": cfg.get("llm_doc_concurrency", cfg.get("doc_concurrency", 4)),
+            "client": _describe_client(client),
         },
         "tokens_total": tokens_total_out,
         "tokens_by_stage": tokens_by_stage,
