@@ -258,55 +258,6 @@ def _section_tokens_summary(tokens_for_section: Optional[Dict[str, Any]]) -> str
     )
 
 
-def _format_llm_client(client: Dict[str, Any]) -> str:
-    """One-line summary of the LLM client used for the run, for the report
-    header. Handles both OpenAIClient (single model) and AoaiPool (one or more
-    Azure deployments) descriptors produced by predict._describe_client."""
-    provider = client.get("provider") or "unknown"
-    if provider == "openai":
-        model = client.get("model") or "unknown"
-        base_url = client.get("base_url")
-        return f"{model} (openai, base: {base_url})" if base_url else f"{model} (openai)"
-    if provider == "azure_openai":
-        deployments = client.get("deployments") or []
-        label = ", ".join(deployments) if deployments else "unknown"
-        n = client.get("n_backends")
-        suffix = f", {n} backends" if n else ""
-        return f"{label} (azure_openai{suffix})"
-    return f"{provider}"
-
-
-def _render_run_info_markdown(run_record: Dict[str, Any]) -> List[str]:
-    """Render a short metadata block at the top of the report so readers know
-    which LLM, parser, and dataset slice produced the numbers below. Omitted
-    when no run_record is available (e.g. legacy runs scored before this was
-    added) so historical reports can still be regenerated."""
-    llm = run_record.get("llm") or {}
-    client = llm.get("client") or {}
-    parts: List[str] = []
-    if client:
-        parts.append(f"- **LLM model:** {_format_llm_client(client)}")
-    parser = run_record.get("parser")
-    if parser:
-        parts.append(f"- **Parser:** {parser}")
-    n_records = run_record.get("n_records")
-    n_errors = run_record.get("n_errors")
-    elapsed = run_record.get("elapsed_s")
-    if n_records is not None:
-        bits = [f"{n_records} records"]
-        if n_errors is not None:
-            bits.append(f"{n_errors} errors")
-        if elapsed is not None:
-            bits.append(f"{elapsed}s")
-        parts.append("- **Run:** " + " · ".join(bits))
-    commit = run_record.get("git_commit")
-    if commit and commit != "unknown":
-        parts.append(f"- **Commit:** {commit}")
-    if not parts:
-        return []
-    return parts + [""]
-
-
 def render_markdown(
     result: Dict[str, Any],
     metrics: List[str],
@@ -316,7 +267,14 @@ def render_markdown(
     tokens_by_section = result.get("tokens") or {}
     lines = [f"# {title}", ""]
     if run_record:
-        lines.extend(_render_run_info_markdown(run_record))
+        model = (run_record.get("llm") or {}).get("model")
+        image = run_record.get("parser_image")
+        if model:
+            lines.append(f"- **LLM model:** {model}")
+        if image:
+            lines.append(f"- **Parser image:** {image}")
+        if model or image:
+            lines.append("")
     for section_name, section in result.items():
         if section_name == "tokens":
             continue  # rendered separately below so the metric tables stay unchanged

@@ -88,6 +88,7 @@ services:
       - grobid-cache:/root/.cache
       - ./benchmarks/runs:/app/benchmarks/runs
       - ./runtime:/app/runtime
+      - ./compose.yml:/app/compose.yml:ro
     # No depends_on: the benchmark container connects to whichever URL is
     # in GROBID_URL, so the Makefile targets are responsible for starting
     # the chosen backend (grobid and/or sciencebeam-parser) first. Hard-
