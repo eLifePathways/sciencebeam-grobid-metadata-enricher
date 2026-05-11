@@ -510,7 +510,7 @@ def main() -> None:
 
     llm_model = (
         client.model if isinstance(client, OpenAIClient)
-        else client.backends[0].deployment
+        else (client.backends[0].model or client.backends[0].deployment)
     )
     run_record = {
         "mode": args.mode,
