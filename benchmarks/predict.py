@@ -91,7 +91,8 @@ def _parser_image(parser_choice: str) -> Optional[str]:
     for path in (Path("/app/compose.yml"), Path(__file__).resolve().parent.parent / "compose.yml"):
         if path.exists():
             compose = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            return (compose.get("services") or {}).get(service, {}).get("image")
+            image = (compose.get("services") or {}).get(service, {}).get("image")
+            return str(image) if image else None
     return None
 
 
