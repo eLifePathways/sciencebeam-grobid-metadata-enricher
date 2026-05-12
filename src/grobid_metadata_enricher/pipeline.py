@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
 
 from .clients import (
     DEFAULT_GROBID_URL,
@@ -20,6 +20,7 @@ from .clients import (
     DEFAULT_PDFALTO_BIN,
     DEFAULT_POOL_PATH,
     AoaiPool,
+    LLMCallError,
     OpenAIClient,
     run_grobid,
     run_pdfalto,
@@ -3347,8 +3348,8 @@ def predict_content_fields_from_alto(
         _table_caption_dedupe_add(target, items)
 
     def _call(system_prompt: str, user_text: str, out_tokens: int, step_name: str) -> Optional[Dict[str, Any]]:
-        try:
-            raw = chat(
+        raw = _run_llm_task(
+            lambda: chat(
                 [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_text},
@@ -3356,8 +3357,10 @@ def predict_content_fields_from_alto(
                 temperature=0.0,
                 max_tokens=out_tokens,
                 step_name=step_name,
-            )
-        except Exception:
+            ),
+            None,
+        )
+        if raw is None:
             return None
         try:
             return extract_json_from_text(raw)
@@ -3746,6 +3749,18 @@ def build_prediction(
         return _build_prediction_inner(context, chat, per_document_llm_workers)
 
 
+_T = TypeVar("_T")
+
+
+def _run_llm_task(task: Callable[[], _T], default: _T) -> _T:
+    try:
+        return task()
+    except LLMCallError:
+        raise
+    except Exception:
+        return default
+
+
 def _build_prediction_inner(
     context: DocumentContext,
     chat: Callable[..., str],
@@ -3770,19 +3785,13 @@ def _build_prediction_inner(
     worker_count = max(1, int(per_document_llm_workers))
     if worker_count == 1:
         for name, task in tasks.items():
-            try:
-                results[name] = task()
-            except Exception:
-                results[name] = _default(name)
+            results[name] = _run_llm_task(task, _default(name))
     else:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             future_map = {executor.submit(with_otel_context(task)): name for name, task in tasks.items()}
             for future in as_completed(future_map):
                 name = future_map[future]
-                try:
-                    results[name] = future.result()
-                except Exception:
-                    results[name] = _default(name)
+                results[name] = _run_llm_task(future.result, _default(name))
 
     header_metadata = normalize_metadata(results.get("header_metadata") or {})
     tei_metadata_pair: Tuple[Any, Any] = results.get("tei_metadata_pair") or ({}, {})

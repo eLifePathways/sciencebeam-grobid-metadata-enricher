@@ -22,6 +22,8 @@ from grobid_metadata_enricher.clients import (
     PARSER_GROBID,
     SUPPORTED_PARSERS,
     AoaiPool,
+    ContentFilterError,
+    LLMCallError,
     OpenAIClient,
     resolve_parser_url,
     run_grobid,
@@ -285,6 +287,10 @@ def process_prediction(
                             if d.strip().lower() not in own_dois
                         ]
             paths["prediction"].write_text(json.dumps(llm_pred, ensure_ascii=True, indent=2), encoding="utf-8")
+    except ContentFilterError as exc:
+        return {"record_id": record_id, "corpus": corpus, "error": f"content_filter: {exc}"}
+    except LLMCallError:
+        raise
     except Exception as exc:
         return {"record_id": record_id, "corpus": corpus, "error": f"extraction: {exc}"}
 
@@ -461,6 +467,10 @@ def main() -> None:
                     done += 1
                     try:
                         _write_prediction_result(fut.result(), row, done, len(ready_rows), f)
+                    except LLMCallError as exc:
+                        raise LLMCallError(
+                            f"{row['corpus']}/{row['record_id']}: {exc}"
+                        ) from exc
                     except Exception as exc:
                         errors.append({"record_id": row["record_id"], "corpus": row["corpus"], "error": str(exc)})
     else:
@@ -473,6 +483,10 @@ def main() -> None:
                     done += 1
                     try:
                         _write_prediction_result(fut.result(), row, done, len(manifest), f)
+                    except LLMCallError as exc:
+                        raise LLMCallError(
+                            f"{row['corpus']}/{row['record_id']}: {exc}"
+                        ) from exc
                     except Exception as exc:
                         errors.append({"record_id": row["record_id"], "corpus": row["corpus"], "error": str(exc)})
 

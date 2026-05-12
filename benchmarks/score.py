@@ -263,6 +263,7 @@ def render_markdown(
     metrics: List[str],
     title: str = "Benchmark report",
     run_record: Optional[Dict[str, Any]] = None,
+    errors: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     tokens_by_section = result.get("tokens") or {}
     lines = [f"# {title}", ""]
@@ -275,6 +276,17 @@ def render_markdown(
             lines.append(f"- **Parser image:** {image}")
         if model or image:
             lines.append("")
+    if errors:
+        counts: Dict[str, int] = {}
+        for err in errors:
+            kind = str(err.get("error", "")).split(":", 1)[0] or "unknown"
+            counts[kind] = counts.get(kind, 0) + 1
+        breakdown = ", ".join(f"{kind}={n}" for kind, n in sorted(counts.items()))
+        lines.append(
+            f"> **Heads up:** {len(errors)} document(s) skipped due to errors "
+            f"({breakdown}). See `errors.json` for details."
+        )
+        lines.append("")
     for section_name, section in result.items():
         if section_name == "tokens":
             continue  # rendered separately below so the metric tables stay unchanged
@@ -411,11 +423,18 @@ def main() -> None:
         if run_record_path.exists()
         else None
     )
+    errors_path = args.run / "errors.json"
+    errors = (
+        json.loads(errors_path.read_text(encoding="utf-8"))
+        if errors_path.exists()
+        else None
+    )
     md = render_markdown(
         result,
         cfg["metrics"],
         title=f"Benchmark report: {args.run.name}",
         run_record=run_record,
+        errors=errors,
     )
     out = args.out or (args.run / "report.md")
     out.write_text(md, encoding="utf-8")

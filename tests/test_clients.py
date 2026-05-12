@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +11,8 @@ from grobid_metadata_enricher.clients import (
     PARSER_GROBID,
     PARSER_SCIENCEBEAM,
     AoaiPool,
+    LLMCallError,
+    OpenAIClient,
     run_grobid,
 )
 
@@ -196,3 +199,57 @@ class TestAoaiPoolRouting:
     def test_rejects_unknown_routing(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="Unsupported AOAI pool routing"):
             AoaiPool(self._pool_path(tmp_path), routing="random")
+
+
+def _http_error(code: int) -> urllib.error.HTTPError:
+    import http.client
+    return urllib.error.HTTPError(
+        url="http://example.com", code=code, msg="error", hdrs=http.client.HTTPMessage(), fp=None
+    )
+
+
+class TestAoaiPoolChatWithUsage:
+    def _pool(self, tmp_path: Path) -> AoaiPool:
+        pool_path = tmp_path / "pool.json"
+        pool_path.write_text(
+            '[{"id":"b0","endpoint":"https://b0/","deployment":"d","apiKey":"k","apiVersion":"v1"}]',
+            encoding="utf-8",
+        )
+        return AoaiPool(pool_path)
+
+    def test_raises_llm_call_error_on_non_retryable_http_error(self, tmp_path: Path) -> None:
+        with (
+            patch("grobid_metadata_enricher.clients.urllib.request.urlopen", side_effect=_http_error(401)),
+            patch("grobid_metadata_enricher.clients.time.sleep"),
+        ):
+            with pytest.raises(LLMCallError, match="HTTP 401"):
+                self._pool(tmp_path).chat_with_usage([{"role": "user", "content": "hi"}])
+
+    def test_raises_llm_call_error_after_retryable_http_errors_exhausted(self, tmp_path: Path) -> None:
+        with (
+            patch("grobid_metadata_enricher.clients.urllib.request.urlopen", side_effect=_http_error(429)),
+            patch("grobid_metadata_enricher.clients.time.sleep"),
+        ):
+            with pytest.raises(LLMCallError, match="after 3 attempts"):
+                self._pool(tmp_path).chat_with_usage([{"role": "user", "content": "hi"}], max_attempts=3)
+
+
+class TestOpenAIClientChatWithUsage:
+    def _client(self) -> OpenAIClient:
+        return OpenAIClient(api_key="test-key", model="gpt-4o", base_url="https://api.example.com")
+
+    def test_raises_llm_call_error_on_non_retryable_http_error(self) -> None:
+        with (
+            patch("grobid_metadata_enricher.clients.urllib.request.urlopen", side_effect=_http_error(401)),
+            patch("grobid_metadata_enricher.clients.time.sleep"),
+        ):
+            with pytest.raises(LLMCallError, match="HTTP 401"):
+                self._client().chat_with_usage([{"role": "user", "content": "hi"}])
+
+    def test_raises_llm_call_error_after_retryable_http_errors_exhausted(self) -> None:
+        with (
+            patch("grobid_metadata_enricher.clients.urllib.request.urlopen", side_effect=_http_error(429)),
+            patch("grobid_metadata_enricher.clients.time.sleep"),
+        ):
+            with pytest.raises(LLMCallError, match="after 3 attempts"):
+                self._client().chat_with_usage([{"role": "user", "content": "hi"}], max_attempts=3)
