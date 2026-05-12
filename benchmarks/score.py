@@ -258,9 +258,23 @@ def _section_tokens_summary(tokens_for_section: Optional[Dict[str, Any]]) -> str
     )
 
 
-def render_markdown(result: Dict[str, Any], metrics: List[str], title: str = "Benchmark report") -> str:
+def render_markdown(
+    result: Dict[str, Any],
+    metrics: List[str],
+    title: str = "Benchmark report",
+    run_record: Optional[Dict[str, Any]] = None,
+) -> str:
     tokens_by_section = result.get("tokens") or {}
     lines = [f"# {title}", ""]
+    if run_record:
+        model = (run_record.get("llm") or {}).get("model")
+        image = run_record.get("parser_image")
+        if model:
+            lines.append(f"- **LLM model:** {model}")
+        if image:
+            lines.append(f"- **Parser image:** {image}")
+        if model or image:
+            lines.append("")
     for section_name, section in result.items():
         if section_name == "tokens":
             continue  # rendered separately below so the metric tables stay unchanged
@@ -391,7 +405,18 @@ def main() -> None:
     )
 
     (args.run / "metrics.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
-    md = render_markdown(result, cfg["metrics"], title=f"Benchmark report: {args.run.name}")
+    run_record_path = args.run / "run_record.json"
+    run_record = (
+        json.loads(run_record_path.read_text(encoding="utf-8"))
+        if run_record_path.exists()
+        else None
+    )
+    md = render_markdown(
+        result,
+        cfg["metrics"],
+        title=f"Benchmark report: {args.run.name}",
+        run_record=run_record,
+    )
     out = args.out or (args.run / "report.md")
     out.write_text(md, encoding="utf-8")
     print(f"Wrote {args.run / 'metrics.json'} and {out}", flush=True)

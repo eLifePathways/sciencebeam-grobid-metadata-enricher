@@ -83,6 +83,19 @@ _STAGE_TO_METRIC_GROUP: Dict[str, str] = {
 _TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "reasoning_tokens")
 
 
+def _parser_image(parser_choice: str) -> Optional[str]:
+    """Return the parser's container image (e.g. ``lfoppiano/grobid:0.9.0-crf``)
+    declared in compose.yml. Checked at the bind-mount path used inside the
+    benchmark container, then at the repo-root path for host-side runs."""
+    service = "sciencebeam-parser" if parser_choice == "sciencebeam" else "grobid"
+    for path in (Path("/app/compose.yml"), Path(__file__).resolve().parent.parent / "compose.yml"):
+        if path.exists():
+            compose = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            image = (compose.get("services") or {}).get(service, {}).get("image")
+            return str(image) if image else None
+    return None
+
+
 def _benchmark_paths(row: Dict[str, str], out_dir: Path, cfg: Dict[str, Any]) -> Dict[str, Path]:
     parser = cfg["grobid"].get("parser", DEFAULT_PARSER)
     corpus_out = out_dir / row["corpus"]
@@ -495,16 +508,22 @@ def main() -> None:
     tokens_total_out: Dict[str, Any] = dict(tokens_total)
     tokens_total_out["n_calls"] = total_n_calls
 
+    llm_model = (
+        client.model if isinstance(client, OpenAIClient)
+        else (client.backends[0].model or client.backends[0].deployment)
+    )
     run_record = {
         "mode": args.mode,
         "config_path": str(args.config),
         "dataset": cfg["dataset"],
         "parser": parser_choice,
+        "parser_image": _parser_image(parser_choice),
         "n_records": n_records,
         "n_errors": len(errors),
         "elapsed_s": round(elapsed, 1),
         "git_commit": os.environ.get("GITHUB_SHA", _git_sha()),
         "llm": {
+            "model": llm_model,
             "temperature": cfg["llm"]["temperature"],
             "max_tokens": cfg["llm"]["max_tokens"],
             "workers": cfg["llm"].get("workers"),

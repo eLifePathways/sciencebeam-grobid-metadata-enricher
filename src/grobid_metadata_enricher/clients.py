@@ -65,6 +65,7 @@ class AoaiBackend:
     deployment: str
     api_key: str
     api_version: str
+    model: Optional[str] = None
 
 
 class AoaiPool:
@@ -81,6 +82,7 @@ class AoaiPool:
                 deployment=entry["deployment"],
                 api_key=entry["apiKey"],
                 api_version=entry["apiVersion"],
+                model=entry.get("model"),
             )
             for entry in raw
         ]
