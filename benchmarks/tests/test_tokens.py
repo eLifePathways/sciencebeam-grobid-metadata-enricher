@@ -151,7 +151,7 @@ class TestRenderMarkdownTokens:
         rows = [_row("scielo_preprints", f"r{i}", _tok(50, 20, by_stage, by_group, n_calls=1)) for i in range(4)]
         result = score(rows, METRICS, CFG_N_RESAMPLES, CFG_CL)
         md = render_markdown(result, METRICS)
-        assert "## Tokens" in md
+        assert "<summary><b>Tokens</b></summary>" in md
         assert "Per stage (overall sums)" in md
         assert "Per metric group (overall sums)" in md
         assert "HEADER_METADATA" in md
@@ -178,4 +178,4 @@ class TestRenderMarkdownTokens:
             },
         }
         md = render_markdown(result, METRICS)
-        assert "## Tokens" not in md
+        assert "<summary><b>Tokens</b></summary>" not in md
