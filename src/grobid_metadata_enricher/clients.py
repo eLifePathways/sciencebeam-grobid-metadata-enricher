@@ -186,7 +186,8 @@ class AoaiPool:
                         continue
                     raise LLMCallError(
                         f"AOAI request failed with HTTP {error.code} "
-                        f"(step={step_name or 'llm'}): {_read_error_body(error)}"
+                        f"(step={step_name or 'llm'}, deployment={backend.deployment}, "
+                        f"endpoint={backend.endpoint}): {_read_error_body(error)}"
                     ) from error
                 except Exception as error:  # pylint: disable=broad-except
                     last_error = error
