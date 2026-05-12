@@ -176,11 +176,11 @@ class AoaiPool:
                     if error.code in {429, 500, 502, 503, 504}:
                         time.sleep(2**attempt)
                         continue
-                    raise
+                    raise LLMCallError(f"AOAI request failed with HTTP {error.code}") from error
                 except Exception as error:  # pylint: disable=broad-except
                     last_error = error
                     time.sleep(2**attempt)
-            raise RuntimeError(f"AOAI request failed after {max_attempts} attempts: {last_error}")
+            raise LLMCallError(f"AOAI request failed after {max_attempts} attempts: {last_error}")
 
     def chat(
         self,
@@ -256,11 +256,11 @@ class OpenAIClient:
                     if error.code in {429, 500, 502, 503, 504}:
                         time.sleep(2**attempt)
                         continue
-                    raise
+                    raise LLMCallError(f"OpenAI request failed with HTTP {error.code}") from error
                 except Exception as error:  # pylint: disable=broad-except
                     last_error = error
                     time.sleep(2**attempt)
-            raise RuntimeError(f"OpenAI request failed after {max_attempts} attempts: {last_error}")
+            raise LLMCallError(f"OpenAI request failed after {max_attempts} attempts: {last_error}")
 
     def chat(
         self,
