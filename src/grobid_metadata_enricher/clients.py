@@ -273,12 +273,15 @@ class OpenAIClient:
                     return content, usage
                 except urllib.error.HTTPError as error:
                     last_error = error
-                    if error.code in {429, 500, 502, 503, 504}:
+                    body = _read_error_body(error)
+                    if error.code in {429, 500, 502, 503, 504} or (
+                        error.code == 400 and "Provider returned error" in body
+                    ):
                         time.sleep(2**attempt)
                         continue
                     raise LLMCallError(
                         f"OpenAI request failed with HTTP {error.code} "
-                        f"(step={step_name or 'llm'}): {_read_error_body(error)}"
+                        f"(step={step_name or 'llm'}): {body}"
                     ) from error
                 except Exception as error:  # pylint: disable=broad-except
                     last_error = error
