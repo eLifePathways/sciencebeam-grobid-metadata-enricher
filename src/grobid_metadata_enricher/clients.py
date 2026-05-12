@@ -34,6 +34,10 @@ class LLMCallError(RuntimeError):
     pass
 
 
+class ContentFilterError(LLMCallError):
+    pass
+
+
 def _read_error_body(error: urllib.error.HTTPError, limit: int = 500) -> str:
     try:
         raw = error.read().decode("utf-8", errors="replace").strip()
@@ -184,11 +188,15 @@ class AoaiPool:
                     if error.code in {429, 500, 502, 503, 504}:
                         time.sleep(2**attempt)
                         continue
-                    raise LLMCallError(
+                    body = _read_error_body(error)
+                    msg = (
                         f"AOAI request failed with HTTP {error.code} "
                         f"(step={step_name or 'llm'}, deployment={backend.deployment}, "
-                        f"endpoint={backend.endpoint}): {_read_error_body(error)}"
-                    ) from error
+                        f"endpoint={backend.endpoint}): {body}"
+                    )
+                    if '"content_filter"' in body:
+                        raise ContentFilterError(msg) from error
+                    raise LLMCallError(msg) from error
                 except Exception as error:  # pylint: disable=broad-except
                     last_error = error
                     time.sleep(2**attempt)

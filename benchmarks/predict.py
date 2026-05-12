@@ -22,6 +22,7 @@ from grobid_metadata_enricher.clients import (
     PARSER_GROBID,
     SUPPORTED_PARSERS,
     AoaiPool,
+    ContentFilterError,
     LLMCallError,
     OpenAIClient,
     resolve_parser_url,
@@ -286,6 +287,8 @@ def process_prediction(
                             if d.strip().lower() not in own_dois
                         ]
             paths["prediction"].write_text(json.dumps(llm_pred, ensure_ascii=True, indent=2), encoding="utf-8")
+    except ContentFilterError as exc:
+        return {"record_id": record_id, "corpus": corpus, "error": f"content_filter: {exc}"}
     except LLMCallError:
         raise
     except Exception as exc:
