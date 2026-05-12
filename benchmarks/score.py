@@ -292,10 +292,12 @@ def render_markdown(
             continue  # rendered separately below so the metric tables stay unchanged
         section_tokens = tokens_by_section.get(section_name) if tokens_by_section else None
         token_summary = _section_tokens_summary(section_tokens)
-        header_line = f"## {section_name} (N={section['n']})"
+        summary_text = f"{section_name} (N={section['n']})"
         if token_summary:
-            header_line += f" — {token_summary}"
-        lines.append(header_line)
+            summary_text += f" — {token_summary}"
+        open_attr = " open" if section_name == "overall" else ""
+        lines.append(f"<details{open_attr}>")
+        lines.append(f"<summary><b>{summary_text}</b></summary>")
         lines.append("")
         has_baseline = any("vs_baseline" in section["metrics"][m] for m in metrics)
         # Attach a per-metric tokens column (summing by the metric's stage-group) when
@@ -336,6 +338,8 @@ def render_markdown(
                     row += ["—", "—"]
             lines.append("| " + " | ".join(row) + " |")
         lines.append("")
+        lines.append("</details>")
+        lines.append("")
 
     tokens = result.get("tokens")
     if tokens:
@@ -344,7 +348,7 @@ def render_markdown(
 
 
 def _render_tokens_markdown(tokens: Dict[str, Any]) -> List[str]:
-    lines: List[str] = ["## Tokens", ""]
+    lines: List[str] = ["<details>", "<summary><b>Tokens</b></summary>", ""]
     overall = tokens.get("overall") or {}
     total = overall.get("total") or {}
     per_doc = overall.get("per_doc_mean_ci") or {}
@@ -394,6 +398,8 @@ def _render_tokens_markdown(tokens: Dict[str, Any]) -> List[str]:
                 f"| {int(b.get('reasoning_tokens', 0))} | {int(b.get('n_calls', 0))} |"
             )
         lines.append("")
+    lines.append("</details>")
+    lines.append("")
     return lines
 
 
