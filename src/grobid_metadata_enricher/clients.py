@@ -34,6 +34,14 @@ class LLMCallError(RuntimeError):
     pass
 
 
+def _read_error_body(error: urllib.error.HTTPError, limit: int = 500) -> str:
+    try:
+        raw = error.read().decode("utf-8", errors="replace").strip()
+    except Exception:  # pylint: disable=broad-except
+        return "<no body>"
+    return raw[:limit] if raw else "<empty body>"
+
+
 # Per-parser default URLs. Picked so `--parser sciencebeam` works on its
 # own without also having to pass `--grobid-url http://localhost:8071/api`,
 # which is the port the compose `sciencebeam-parser` service publishes.
@@ -176,7 +184,10 @@ class AoaiPool:
                     if error.code in {429, 500, 502, 503, 504}:
                         time.sleep(2**attempt)
                         continue
-                    raise LLMCallError(f"AOAI request failed with HTTP {error.code}") from error
+                    raise LLMCallError(
+                        f"AOAI request failed with HTTP {error.code} "
+                        f"(step={step_name or 'llm'}): {_read_error_body(error)}"
+                    ) from error
                 except Exception as error:  # pylint: disable=broad-except
                     last_error = error
                     time.sleep(2**attempt)
@@ -256,7 +267,10 @@ class OpenAIClient:
                     if error.code in {429, 500, 502, 503, 504}:
                         time.sleep(2**attempt)
                         continue
-                    raise LLMCallError(f"OpenAI request failed with HTTP {error.code}") from error
+                    raise LLMCallError(
+                        f"OpenAI request failed with HTTP {error.code} "
+                        f"(step={step_name or 'llm'}): {_read_error_body(error)}"
+                    ) from error
                 except Exception as error:  # pylint: disable=broad-except
                     last_error = error
                     time.sleep(2**attempt)

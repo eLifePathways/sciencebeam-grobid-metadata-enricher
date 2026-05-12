@@ -464,8 +464,10 @@ def main() -> None:
                     done += 1
                     try:
                         _write_prediction_result(fut.result(), row, done, len(ready_rows), f)
-                    except LLMCallError:
-                        raise
+                    except LLMCallError as exc:
+                        raise LLMCallError(
+                            f"{row['corpus']}/{row['record_id']}: {exc}"
+                        ) from exc
                     except Exception as exc:
                         errors.append({"record_id": row["record_id"], "corpus": row["corpus"], "error": str(exc)})
     else:
@@ -478,8 +480,10 @@ def main() -> None:
                     done += 1
                     try:
                         _write_prediction_result(fut.result(), row, done, len(manifest), f)
-                    except LLMCallError:
-                        raise
+                    except LLMCallError as exc:
+                        raise LLMCallError(
+                            f"{row['corpus']}/{row['record_id']}: {exc}"
+                        ) from exc
                     except Exception as exc:
                         errors.append({"record_id": row["record_id"], "corpus": row["corpus"], "error": str(exc)})
 
