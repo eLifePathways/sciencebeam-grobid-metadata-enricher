@@ -28,6 +28,12 @@ PARSER_GROBID = "grobid"
 PARSER_SCIENCEBEAM = "sciencebeam"
 SUPPORTED_PARSERS = (PARSER_GROBID, PARSER_SCIENCEBEAM)
 DEFAULT_PARSER = os.getenv("PARSER", PARSER_GROBID)
+
+
+class LLMCallError(RuntimeError):
+    pass
+
+
 # Per-parser default URLs. Picked so `--parser sciencebeam` works on its
 # own without also having to pass `--grobid-url http://localhost:8071/api`,
 # which is the port the compose `sciencebeam-parser` service publishes.
