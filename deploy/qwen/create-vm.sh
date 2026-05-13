@@ -30,6 +30,19 @@ fi
 
 [ -f "$STARTUP_SCRIPT" ] || { echo "startup script $STARTUP_SCRIPT not found" >&2; exit 1; }
 
+# Optional LoRA serving: pass through to the VM as instance metadata; the
+# baked startup script picks these up and configures vLLM accordingly.
+extra_metadata=()
+if [ -n "${LORA_GCS_URI:-}" ]; then
+  extra_metadata+=("lora-gcs-uri=${LORA_GCS_URI}")
+  extra_metadata+=("lora-name=${LORA_NAME:-v2}")
+  extra_metadata+=("lora-max-rank=${LORA_MAX_RANK:-16}")
+fi
+metadata_arg=""
+if [ "${#extra_metadata[@]}" -gt 0 ]; then
+  metadata_arg="--metadata=$(IFS=,; echo "${extra_metadata[*]}")"
+fi
+
 last_err=""
 for zone in $ZONE_LIST; do
   echo "[create-vm] trying $zone..."
@@ -47,6 +60,7 @@ for zone in $ZONE_LIST; do
     --boot-disk-type=pd-ssd \
     --tags=qwen-bench \
     --metadata-from-file="startup-script=$STARTUP_SCRIPT" \
+    ${metadata_arg:+"$metadata_arg"} \
     --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>&1); then
     echo "[create-vm] created in $zone, external IP=$out"
     echo "ZONE=$zone"
