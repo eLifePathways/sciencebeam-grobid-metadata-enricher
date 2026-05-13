@@ -11,7 +11,11 @@ set -euo pipefail
 
 : "${PROJECT:?Set PROJECT=<gcp-project-id>}"
 NAME="${NAME:-qwen-bench-$(date -u +%Y%m%d-%H%M)}"
-ZONE_LIST="${ZONE_LIST:-us-central1-a us-central1-b us-central1-c us-central1-f us-east4-c europe-west4-a}"
+# Interleave regions so a quota-exhausted region (PREEMPTIBLE_NVIDIA_A100_GPUS
+# is a per-region quota of 16; one peer A100x8 workload + ours = full) falls
+# through to a region with free quota in one hop. us-east4 / europe-west4
+# typically have free preemptible A100 quota in this project.
+ZONE_LIST="${ZONE_LIST:-us-east4-c us-central1-c europe-west4-a us-east4-b us-central1-a us-central1-b us-central1-f}"
 MACHINE="${MACHINE:-a2-highgpu-8g}"
 ACCEL="${ACCEL:-type=nvidia-tesla-a100,count=8}"
 MAX_RUN_SECONDS="${MAX_RUN_SECONDS:-7200}"
@@ -79,13 +83,17 @@ for zone in $ZONE_LIST; do
     exit 0
   fi
   last_err="$out"
-  # Stockout signals come back as multi-line, mixed-case, with varying
-  # wording. Normalize whitespace then match case-insensitively on any of
-  # the keywords the API has used: STOCKOUT, RESOURCE_EXHAUSTED,
-  # resource_availability, "enough resources".
+  # Stockout AND quota-exhausted signals both mean "try elsewhere". Stockout
+  # is zone-scoped; quota is region-scoped so the next us-central1 zone won't
+  # help, but a region-interleaved ZONE_LIST hops to a fresh region anyway.
+  # Wording varies (STOCKOUT, RESOURCE_EXHAUSTED, resource_availability,
+  # "enough resources", QUOTA_EXCEEDED, "limit exceeded", references to a
+  # per-region quota metric like preemptible_nvidia_a100_gpus). Normalize
+  # whitespace then case-insensitive grep.
   norm_err="$(echo "$last_err" | tr -s '\n\t ' ' ')"
-  if echo "$norm_err" | grep -qiE "(stockout|resource_exhausted|resource_availability|enough resources)"; then
-    echo "[create-vm] stockout in $zone; trying next zone"
+  if echo "$norm_err" | grep -qiE \
+      "(stockout|resource_exhausted|resource_availability|enough resources|quota_exceeded|limit exceeded|preemptible_nvidia|nvidia_a100_gpus)"; then
+    echo "[create-vm] capacity/quota issue in $zone; trying next zone"
     continue
   fi
   echo "[create-vm] non-stockout error in $zone:" >&2
