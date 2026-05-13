@@ -107,7 +107,7 @@ jobs:
               code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
                 -X POST "http://${IP}:$((8000+i))/v1/chat/completions" \
                 -H 'Content-Type: application/json' \
-                --data "$payload")
+                --data "$payload" || echo "000")
               [ "$code" = "200" ] && ready=$((ready+1))
             done
             echo "[$(date +%H:%M:%S)] $ready/8 replicas accept chat completions"
