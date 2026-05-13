@@ -13,9 +13,11 @@ set -euo pipefail
 NAME="${NAME:-qwen-bench-$(date -u +%Y%m%d-%H%M)}"
 # Interleave regions so a quota-exhausted region (PREEMPTIBLE_NVIDIA_A100_GPUS
 # is a per-region quota of 16; one peer A100x8 workload + ours = full) falls
-# through to a region with free quota in one hop. us-east4 / europe-west4
-# typically have free preemptible A100 quota in this project.
-ZONE_LIST="${ZONE_LIST:-us-east4-c us-central1-c europe-west4-a us-east4-b us-central1-a us-central1-b us-central1-f}"
+# through to a region with free quota in one hop. Every zone here MUST have
+# the a2-highgpu-8g shape — verified via `gcloud compute machine-types list
+# --filter=name=a2-highgpu-8g` on 2026-05-13. us-east4/us-east5 do NOT have
+# the shape so they are deliberately excluded.
+ZONE_LIST="${ZONE_LIST:-us-east1-b us-central1-c us-west1-b europe-west4-a us-central1-a us-west4-b us-central1-b us-central1-f us-west3-b europe-west4-b}"
 MACHINE="${MACHINE:-a2-highgpu-8g}"
 ACCEL="${ACCEL:-type=nvidia-tesla-a100,count=8}"
 MAX_RUN_SECONDS="${MAX_RUN_SECONDS:-7200}"
@@ -92,8 +94,8 @@ for zone in $ZONE_LIST; do
   # whitespace then case-insensitive grep.
   norm_err="$(echo "$last_err" | tr -s '\n\t ' ' ')"
   if echo "$norm_err" | grep -qiE \
-      "(stockout|resource_exhausted|resource_availability|enough resources|quota_exceeded|limit exceeded|preemptible_nvidia|nvidia_a100_gpus)"; then
-    echo "[create-vm] capacity/quota issue in $zone; trying next zone"
+      "(stockout|resource_exhausted|resource_availability|enough resources|quota_exceeded|limit exceeded|preemptible_nvidia|nvidia_a100_gpus|does not exist in zone|machine type with name)"; then
+    echo "[create-vm] capacity/quota/availability issue in $zone; trying next zone"
     continue
   fi
   echo "[create-vm] non-stockout error in $zone:" >&2
