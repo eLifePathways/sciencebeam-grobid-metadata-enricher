@@ -4,27 +4,53 @@
 # already present, so this script just launches the 8 vLLM workers and
 # blocks on health.
 #
-# Optional LoRA serving: if the instance metadata `lora-gcs-uri` is set
-# (e.g. gs://my-bucket/lora/v2/), the script fetches it into /var/lora/<name>
-# and passes --enable-lora --lora-modules to vLLM. The adapter is served
-# under the name read from metadata `lora-name` (default: "v2"). The
-# bench pool JSON should use that name as its "deployment" field so the
-# OpenAI-compat model= field routes through the adapter.
+# Optional LoRA serving — two modes:
+#   single LoRA: set instance metadata `lora-gcs-uri` (+ `lora-name`,
+#                `lora-max-rank`). Adapter served under `lora-name`.
+#   multi-LoRA: set instance metadata `lora-pack`, a newline-separated
+#                list of `<name><TAB><gcs-uri>` entries. Each is rsynced
+#                into /var/lora/<name>/ and registered as a
+#                --lora-modules entry. `lora-max-rank` still applies and
+#                must be >= the max rank across all adapters.
+# The bench pool JSON's "deployment" (or its STEP_LORA_MAP_JSON router)
+# must use those names so the OpenAI `model` field selects them.
 
 set -euo pipefail
 
 MODEL="${QWEN_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 IMAGE="vllm/vllm-openai:latest"
 
-LORA_GCS_URI="$(curl -sf -H 'Metadata-Flavor: Google' \
-  http://metadata.google.internal/computeMetadata/v1/instance/attributes/lora-gcs-uri || true)"
-LORA_NAME="$(curl -sf -H 'Metadata-Flavor: Google' \
-  http://metadata.google.internal/computeMetadata/v1/instance/attributes/lora-name || echo v2)"
-LORA_MAX_RANK="$(curl -sf -H 'Metadata-Flavor: Google' \
-  http://metadata.google.internal/computeMetadata/v1/instance/attributes/lora-max-rank || echo 16)"
+meta() {
+  curl -sf -H 'Metadata-Flavor: Google' \
+    "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1" || true
+}
+
+LORA_GCS_URI="$(meta lora-gcs-uri)"
+LORA_NAME="$(meta lora-name)"; LORA_NAME="${LORA_NAME:-v2}"
+LORA_MAX_RANK="$(meta lora-max-rank)"; LORA_MAX_RANK="${LORA_MAX_RANK:-16}"
+LORA_PACK="$(meta lora-pack)"
 
 lora_args=()
-if [ -n "$LORA_GCS_URI" ]; then
+modules=()
+
+if [ -n "$LORA_PACK" ]; then
+  # multi-LoRA: each line is "<name>\t<gcs-uri>"
+  count=0
+  while IFS=$'\t' read -r name uri; do
+    [ -z "$name" ] && continue
+    mkdir -p "/var/lora/$name"
+    echo "[startup] syncing $name from $uri"
+    gsutil -m rsync -d -r "$uri" "/var/lora/$name/"
+    modules+=("$name=/var/lora/$name")
+    count=$((count + 1))
+  done <<< "$LORA_PACK"
+  lora_args=(
+    --enable-lora
+    --lora-modules "${modules[@]}"
+    --max-lora-rank "$LORA_MAX_RANK"
+    --max-loras "$count"
+  )
+elif [ -n "$LORA_GCS_URI" ]; then
   mkdir -p "/var/lora/${LORA_NAME}"
   gsutil -m rsync -d -r "$LORA_GCS_URI" "/var/lora/${LORA_NAME}/"
   lora_args=(

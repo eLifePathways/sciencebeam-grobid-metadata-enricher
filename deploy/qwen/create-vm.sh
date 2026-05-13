@@ -38,11 +38,22 @@ fi
 
 # Optional LoRA serving: pass through to the VM as instance metadata; the
 # baked startup script picks these up and configures vLLM accordingly.
+# `LORA_PACK_FILE` lets the multi-LoRA mode read a multi-line list (one
+# `<name>\t<gcs-uri>` per line) without smashing it into the comma-
+# separated `--metadata` argument. We use `--metadata-from-file=lora-pack`.
 extra_metadata=()
-if [ -n "${LORA_GCS_URI:-}" ]; then
-  extra_metadata+=("lora-gcs-uri=${LORA_GCS_URI}")
-  extra_metadata+=("lora-name=${LORA_NAME:-v2}")
+metadata_from_file_args=()
+if [ -n "${LORA_PACK_FILE:-}" ]; then
+  [ -f "$LORA_PACK_FILE" ] || { echo "LORA_PACK_FILE=$LORA_PACK_FILE not found" >&2; exit 1; }
+  metadata_from_file_args+=("--metadata-from-file=startup-script=$STARTUP_SCRIPT,lora-pack=$LORA_PACK_FILE")
   extra_metadata+=("lora-max-rank=${LORA_MAX_RANK:-16}")
+else
+  metadata_from_file_args+=("--metadata-from-file=startup-script=$STARTUP_SCRIPT")
+  if [ -n "${LORA_GCS_URI:-}" ]; then
+    extra_metadata+=("lora-gcs-uri=${LORA_GCS_URI}")
+    extra_metadata+=("lora-name=${LORA_NAME:-v2}")
+    extra_metadata+=("lora-max-rank=${LORA_MAX_RANK:-16}")
+  fi
 fi
 metadata_arg=""
 if [ "${#extra_metadata[@]}" -gt 0 ]; then
@@ -68,7 +79,7 @@ for zone in $ZONE_LIST; do
     --boot-disk-size=200GB \
     --boot-disk-type=pd-ssd \
     --tags=qwen-bench \
-    --metadata-from-file="startup-script=$STARTUP_SCRIPT" \
+    "${metadata_from_file_args[@]}" \
     ${metadata_arg:+"$metadata_arg"} \
     --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>&1); then
     # Strip progress chatter and pick the line that looks like a public IPv4.

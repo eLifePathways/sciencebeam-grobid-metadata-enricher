@@ -25,6 +25,12 @@ on:
         required: false
         default: '16'
         type: string
+      lora_preset:
+        description: 'Preset multi-LoRA pack. "v1" preloads all 7 per-stage v1 adapters and routes each pipeline step to the matching one via STEP_LORA_MAP_JSON. Overrides lora_gcs_uri/lora_name when set.'
+        required: false
+        default: ''
+        type: choice
+        options: ['', 'v1']
       mode:
         description: 'Bench mode'
         required: false
@@ -70,6 +76,31 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      - name: Build LoRA pack (preset mode)
+        id: pack
+        if: inputs.lora_preset != ''
+        env:
+          BUCKET: gs://${{ vars.GCP_LORA_BUCKET }}
+          PRESET: ${{ inputs.lora_preset }}
+        run: |
+          set -euo pipefail
+          if [ "$PRESET" = "v1" ]; then
+            names=(body_sections_v1 figure_captions_v1 header_metadata_v1 identifiers_v1 keywords_v1 references_v1 table_captions_v1)
+            : > /tmp/lora_pack.tsv
+            for n in "${names[@]}"; do
+              printf "%s\t%s/lora/%s/\n" "$n" "$BUCKET" "$n" >> /tmp/lora_pack.tsv
+            done
+            # Hardcoded step -> LoRA routing for the v1 pack.
+            cat > /tmp/step_lora_map.json <<'EOF'
+          {"HEADER_METADATA":"header_metadata_v1","TEI_METADATA":"header_metadata_v1","TEI_VALIDATED":"header_metadata_v1","CONTENT_BODY_SECTIONS":"body_sections_v1","CONTENT_REFERENCES":"references_v1","CONTENT_FIGURE_CAPTIONS":"figure_captions_v1","CONTENT_TABLE_CAPTIONS":"table_captions_v1","KEYWORD_TRANSLATE":"keywords_v1","KEYWORD_SELECT":"keywords_v1","KEYWORD_EXTRACT":"keywords_v1","KEYWORD_INFER":"keywords_v1","IDENTIFIER_SELECT":"identifiers_v1"}
+          EOF
+            echo "lora_pack_file=/tmp/lora_pack.tsv" >> "$GITHUB_OUTPUT"
+            echo "step_lora_map_file=/tmp/step_lora_map.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unknown lora_preset: $PRESET"
+            exit 1
+          fi
+
       - name: Provision spot cluster
         id: provision
         env:
@@ -78,6 +109,7 @@ jobs:
           LORA_GCS_URI: ${{ inputs.lora_gcs_uri }}
           LORA_NAME: ${{ inputs.lora_name }}
           LORA_MAX_RANK: ${{ inputs.lora_max_rank }}
+          LORA_PACK_FILE: ${{ steps.pack.outputs.lora_pack_file }}
         run: |
           out=$(bash deploy/qwen/create-vm.sh)
           echo "$out"
@@ -90,8 +122,10 @@ jobs:
       - name: Wait for 8 vLLM replicas to be ready
         env:
           IP: ${{ steps.provision.outputs.ip }}
-          # When LoRA is loaded, model= the lora name; otherwise base.
-          MODEL_NAME: ${{ inputs.lora_gcs_uri && inputs.lora_name || 'Qwen/Qwen2.5-7B-Instruct' }}
+          # Use base model name to probe — always present in /v1/models even
+          # when LoRA modules are also loaded. Avoids guessing one specific
+          # LoRA name in multi-LoRA preset mode.
+          MODEL_NAME: 'Qwen/Qwen2.5-7B-Instruct'
         run: |
           # vLLM's /health returns 200 as soon as the FastAPI app starts,
           # which can be BEFORE the engine subprocess finishes registering
@@ -120,7 +154,9 @@ jobs:
       - name: Build pool JSON
         env:
           IP: ${{ steps.provision.outputs.ip }}
-          MODEL_NAME: ${{ inputs.lora_gcs_uri && inputs.lora_name || 'Qwen/Qwen2.5-7B-Instruct' }}
+          # In multi-LoRA preset mode the pool's `deployment` is the base
+          # model name; per-stage overrides come from STEP_LORA_MAP_JSON.
+          MODEL_NAME: ${{ (inputs.lora_preset == '' && inputs.lora_gcs_uri) && inputs.lora_name || 'Qwen/Qwen2.5-7B-Instruct' }}
         run: |
           mkdir -p runtime
           python3 - <<PY > runtime/qwen_pool.json
@@ -157,7 +193,13 @@ jobs:
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
           AOAI_POOL_PATH: ${{ github.workspace }}/runtime/qwen_pool.json
+          STEP_LORA_MAP_FILE: ${{ steps.pack.outputs.step_lora_map_file }}
         run: |
+          if [ -n "${STEP_LORA_MAP_FILE:-}" ] && [ -f "$STEP_LORA_MAP_FILE" ]; then
+            STEP_LORA_MAP_JSON="$(cat "$STEP_LORA_MAP_FILE")"
+            export STEP_LORA_MAP_JSON
+            echo "STEP_LORA_MAP_JSON set ($(echo "$STEP_LORA_MAP_JSON" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)),"entries")'))"
+          fi
           uv run python -m benchmarks.predict \
             --config benchmarks/bench.yaml \
             --mode   ${{ inputs.mode }} \

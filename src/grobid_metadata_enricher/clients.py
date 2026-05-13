@@ -99,6 +99,7 @@ def _build_chat_request(
     *,
     temperature: float,
     max_tokens: int,
+    model_override: Optional[str] = None,
 ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
     """Build (url, headers, payload) for one chat-completions call.
 
@@ -107,6 +108,10 @@ def _build_chat_request(
     {dep}/chat/completions?api-version=... with `api-key:` header and the
     deployment in the URL path; OpenAI-compat uses /v1/chat/completions
     with `Authorization: Bearer` and the model name in the JSON body.
+
+    `model_override` lets the caller swap the OpenAI `model` field per
+    request — used to route step_name -> LoRA adapter when one vLLM
+    cluster is serving multiple `--lora-modules` at once.
     """
     if backend.kind == "openai":
         url = backend.endpoint.rstrip("/") + "/v1/chat/completions"
@@ -115,7 +120,7 @@ def _build_chat_request(
             "Authorization": f"Bearer {backend.api_key}",
         }
         payload: Dict[str, Any] = {
-            "model": backend.model or backend.deployment,
+            "model": model_override or backend.model or backend.deployment,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -171,6 +176,12 @@ class AoaiPool:
                 f"Unsupported AOAI pool routing {self.routing!r}; "
                 f"expected {self._ROUTING_ROUND_ROBIN!r} or {self._ROUTING_STABLE!r}"
             )
+        # Optional: route step_name -> LoRA model name. When the served vLLM
+        # cluster has multiple --lora-modules loaded, this map lets each
+        # pipeline stage hit its own adapter via the OpenAI `model` field
+        # while the 8-backend round-robin / stable hashing stays unchanged.
+        raw_map = os.getenv("STEP_LORA_MAP_JSON", "").strip()
+        self.step_lora_map: Dict[str, str] = json.loads(raw_map) if raw_map else {}
         self._index = 0
         self._lock = threading.Lock()
 
@@ -212,8 +223,11 @@ class AoaiPool:
             last_error: Optional[Exception] = None
             for attempt in range(max_attempts):
                 backend = self.backend_for_request(messages, step_name=step_name, attempt=attempt)
+                model_override = self.step_lora_map.get(step_name) if step_name else None
                 url, headers, payload = _build_chat_request(
-                    backend, messages, temperature=temperature, max_tokens=max_tokens,
+                    backend, messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    model_override=model_override,
                 )
                 request = urllib.request.Request(
                     url,
@@ -226,7 +240,7 @@ class AoaiPool:
                         body = json.loads(response.read().decode("utf-8"))
                     content = _extract_chat_content(body)
                     usage = _extract_usage(body)
-                    span.set_attribute("llm.model_name", backend.deployment)
+                    span.set_attribute("llm.model_name", model_override or backend.deployment)
                     span.set_attribute("output.value", content)
                     span.set_attribute("llm.token_count.prompt", usage["prompt_tokens"])
                     span.set_attribute("llm.token_count.completion", usage["completion_tokens"])
