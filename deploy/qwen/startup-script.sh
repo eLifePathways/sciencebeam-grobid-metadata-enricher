@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# VM startup script for the on-demand Qwen-7B serving node.
+# VM startup script for the on-demand Qwen-7B serving node (UNBAKED path).
 # Target image family: deeplearning-platform-release/common-cu129-ubuntu-2204-nvidia-580
 # Target shape: a2-highgpu-8g (8 x A100 40GB, spot)
+#
+# Use this only if the baked image-family=qwen-bench isn't available yet
+# (see build-image.sh). With the baked image, prefer startup-script-baked.sh
+# which skips install + pull + download (~8 min faster cold start).
 #
 # Brings up 8 vLLM workers, one per GPU, on ports 8000..8007 sharing a
 # single host-mounted HF cache so the model weights are pulled once.
@@ -16,16 +20,35 @@ HF_TOKEN="$(curl -sf -H 'Metadata-Flavor: Google' \
 IMAGE="vllm/vllm-openai:latest"
 HF_CACHE=/var/hf-cache
 
+# Install Docker + NVIDIA Container Toolkit. The DL CUDA image ships drivers
+# but not docker; idempotent so re-runs / baked images are no-ops.
+if ! command -v docker >/dev/null; then
+  apt-get update -qq
+  apt-get install -yqq docker.io
+fi
+if ! dpkg -l nvidia-container-toolkit 2>/dev/null | grep -q ii; then
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+    | gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+    > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+  apt-get update -qq
+  apt-get install -yqq nvidia-container-toolkit || true
+fi
+if ! grep -q '"nvidia"' /etc/docker/daemon.json 2>/dev/null; then
+  nvidia-ctk runtime configure --runtime=docker
+  systemctl restart docker
+fi
+
 mkdir -p "$HF_CACHE"
 docker pull "$IMAGE"
 
 # Pre-download once into the shared cache so the 8 vLLM containers don't
-# race on the HF download. Qwen-7B Instruct is ungated as of 2026-05; the
-# HF token is optional but improves rate limits if supplied.
+# race on the HF download. vLLM image lacks a 'python' symlink, only python3.
 docker run --rm \
   -v "$HF_CACHE:/root/.cache/huggingface" \
   -e HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
-  --entrypoint python "$IMAGE" \
+  --entrypoint python3 "$IMAGE" \
   -c "from huggingface_hub import snapshot_download; snapshot_download('$MODEL')"
 
 for i in 0 1 2 3 4 5 6 7; do
@@ -42,8 +65,7 @@ for i in 0 1 2 3 4 5 6 7; do
     --served-model-name "$MODEL" \
     --enable-prefix-caching \
     --max-model-len 32768 \
-    --gpu-memory-utilization 0.90 \
-    --disable-log-requests
+    --gpu-memory-utilization 0.90
 done
 
 # Block until all 8 replicas answer /health 200. With weights already on
