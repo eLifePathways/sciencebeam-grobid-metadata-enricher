@@ -44,7 +44,6 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       AOAI_POOL_JSON: ${{ secrets.AOAI_POOL_JSON }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
