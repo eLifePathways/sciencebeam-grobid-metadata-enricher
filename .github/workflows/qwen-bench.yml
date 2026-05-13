@@ -1,34 +1,54 @@
 name: qwen-bench
 
-# One-shot benchmark dispatch against an externally-hosted Qwen pool.
-# Takes the pool JSON inline as a dispatch input (so the ephemeral spot
-# VM IPs don't have to be committed). Runs the standard bench.yaml smoke
-# (validation split, 25 docs/corpus) and uploads the report as an artifact.
+# Full end-to-end Qwen-on-spot-A100 bench, triggered from CI.
+# Provisions an 8x A100 SPOT VM (baked image qwen-bench), optionally
+# loads a LoRA adapter from GCS, runs bench.yaml smoke, tears down.
+#
+# WIF setup: deploy/qwen/setup-wif.sh produces the SA + provider; set
+# GCP_PROJECT / GCP_WIF_PROVIDER / GCP_BENCH_SA / GCP_LORA_BUCKET as
+# repo Variables (Settings > Variables).
 
 on:
   workflow_dispatch:
     inputs:
-      pool_json:
-        description: 'qwen_pool.json contents (kind=openai entries pointing at the VM)'
-        required: true
+      lora_gcs_uri:
+        description: 'GCS URI of the LoRA adapter, e.g. gs://<bucket>/lora/v2/. Omit to bench base Qwen.'
+        required: false
+        type: string
+      lora_name:
+        description: 'LoRA name (also the OpenAI model= field). Default v2.'
+        required: false
+        default: v2
+        type: string
+      lora_max_rank:
+        description: 'vLLM --max-lora-rank. Must be >= adapter rank. Default 16.'
+        required: false
+        default: '16'
         type: string
       mode:
-        description: 'smoke (25/corpus) or full'
+        description: 'Bench mode'
         required: false
         default: smoke
         type: choice
         options: [smoke, full]
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
+  id-token: write   # WIF
 
 jobs:
   qwen-bench:
+    # Only on the right label for PRs; always on workflow_dispatch.
+    if: github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && github.event.label.name == 'bench:qwen')
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      VM_NAME: qwen-bench-${{ github.run_id }}
 
     services:
       grobid:
@@ -43,6 +63,70 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_BENCH_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Provision spot cluster
+        id: provision
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          NAME: ${{ env.VM_NAME }}
+          LORA_GCS_URI: ${{ inputs.lora_gcs_uri }}
+          LORA_NAME: ${{ inputs.lora_name }}
+          LORA_MAX_RANK: ${{ inputs.lora_max_rank }}
+        run: |
+          out=$(bash deploy/qwen/create-vm.sh)
+          echo "$out"
+          ip=$(echo "$out" | awk -F= '/^EXTERNAL_IP=/ {print $2}' | tail -1)
+          zone=$(echo "$out" | awk -F= '/^ZONE=/ {print $2}' | tail -1)
+          echo "ip=$ip"     >> "$GITHUB_OUTPUT"
+          echo "zone=$zone" >> "$GITHUB_OUTPUT"
+          test -n "$ip" -a -n "$zone"
+
+      - name: Wait for 8 vLLM replicas to be healthy
+        env:
+          IP: ${{ steps.provision.outputs.ip }}
+        run: |
+          deadline=$(( $(date +%s) + 600 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            ready=0
+            for i in 0 1 2 3 4 5 6 7; do
+              if curl -sf -m 3 "http://${IP}:$((8000+i))/health" >/dev/null; then
+                ready=$((ready+1))
+              fi
+            done
+            if [ "$ready" -eq 8 ]; then echo "ALL_READY"; exit 0; fi
+            sleep 10
+          done
+          echo "::error::only $ready/8 vLLM replicas healthy after 10 min"
+          exit 1
+
+      - name: Build pool JSON
+        env:
+          IP: ${{ steps.provision.outputs.ip }}
+          MODEL_NAME: ${{ inputs.lora_gcs_uri && inputs.lora_name || 'Qwen/Qwen2.5-7B-Instruct' }}
+        run: |
+          mkdir -p runtime
+          python3 - <<PY > runtime/qwen_pool.json
+          import json
+          ip = "${IP}"
+          name = "${MODEL_NAME}"
+          print(json.dumps([
+              {"id": f"qwen-{i}",
+               "endpoint": f"http://{ip}:{8000+i}",
+               "deployment": name,
+               "apiKey": "local",
+               "apiVersion": "unused",
+               "kind": "openai"}
+              for i in range(8)
+          ], indent=2))
+          PY
+          python3 -c "import json; print(len(json.load(open('runtime/qwen_pool.json'))), 'backends')"
+
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
@@ -50,50 +134,17 @@ jobs:
       - name: Install Python deps
         run: uv sync --extra bench --extra dev
 
-      - name: Extract pdfalto from Grobid image
+      - name: Extract pdfalto
         run: |
           docker create --name pdfalto_src lfoppiano/grobid:0.9.0-crf
           docker cp pdfalto_src:/opt/grobid/grobid-home/pdfalto/lin-64/pdfalto ./pdfalto
           sudo install -m 755 ./pdfalto /usr/local/bin/pdfalto
           docker rm pdfalto_src
 
-      - name: Materialise Qwen pool JSON
-        env:
-          POOL_JSON: ${{ inputs.pool_json }}
-        run: |
-          mkdir -p runtime
-          printf '%s' "$POOL_JSON" > runtime/qwen_pool.json
-          python3 -c "import json; pool=json.load(open('runtime/qwen_pool.json')); assert all(b.get('kind')=='openai' for b in pool), 'expected all entries kind=openai'; print(f'{len(pool)} backends loaded')"
-
-      - name: Probe Qwen backends
-        run: |
-          python3 - <<'PY'
-          import json, urllib.request
-          pool = json.load(open('runtime/qwen_pool.json'))
-          for b in pool:
-              url = b['endpoint'].rstrip('/') + '/health'
-              try:
-                  with urllib.request.urlopen(url, timeout=10) as r:
-                      print(b['id'], r.status)
-              except Exception as e:
-                  print(b['id'], 'UNREACHABLE', repr(e))
-          PY
-
-      - name: Wait for Grobid
-        run: |
-          for i in $(seq 1 60); do
-            if curl -sf http://localhost:8070/api/isalive; then
-              echo; echo "Grobid up"; exit 0
-            fi
-            sleep 2
-          done
-          echo "Grobid never became healthy" >&2; exit 1
-
       - name: Run predict
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
           AOAI_POOL_PATH: ${{ github.workspace }}/runtime/qwen_pool.json
-          AOAI_POOL_ROUTING: stable
         run: |
           uv run python -m benchmarks.predict \
             --config benchmarks/bench.yaml \
@@ -119,3 +170,13 @@ jobs:
             benchmarks/runs/${{ github.run_id }}/*.json
             benchmarks/runs/${{ github.run_id }}/*.jsonl
           retention-days: 30
+
+      - name: Tear down spot cluster
+        if: always() && steps.provision.outputs.ip
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT }}
+        run: |
+          gcloud compute instances delete ${{ env.VM_NAME }} \
+            --project="$PROJECT" \
+            --zone="${{ steps.provision.outputs.zone }}" \
+            --quiet || true

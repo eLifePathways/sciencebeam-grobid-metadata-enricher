@@ -46,6 +46,9 @@ fi
 last_err=""
 for zone in $ZONE_LIST; do
   echo "[create-vm] trying $zone..."
+  # `gcloud compute instances create` prints both progress text ("Created [...]")
+  # and the --format output to the same stream. Send progress to stderr-captured
+  # buf and keep only the IP on stdout by piping through tail.
   if out=$(gcloud compute instances create "$NAME" \
     --project="$PROJECT" \
     --zone="$zone" \
@@ -62,10 +65,17 @@ for zone in $ZONE_LIST; do
     --metadata-from-file="startup-script=$STARTUP_SCRIPT" \
     ${metadata_arg:+"$metadata_arg"} \
     --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>&1); then
-    echo "[create-vm] created in $zone, external IP=$out"
+    # Strip progress chatter and pick the line that looks like a public IPv4.
+    ip=$(echo "$out" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1)
+    if [ -z "$ip" ]; then
+      echo "[create-vm] could not parse IP out of create output; raw:" >&2
+      echo "$out" >&2
+      exit 1
+    fi
+    echo "[create-vm] created in $zone, external IP=$ip"
     echo "ZONE=$zone"
     echo "NAME=$NAME"
-    echo "EXTERNAL_IP=$out"
+    echo "EXTERNAL_IP=$ip"
     exit 0
   fi
   last_err="$out"
