@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import urllib.request
 from pathlib import Path
+from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -196,3 +199,121 @@ class TestAoaiPoolRouting:
     def test_rejects_unknown_routing(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="Unsupported AOAI pool routing"):
             AoaiPool(self._pool_path(tmp_path), routing="random")
+
+
+class TestAoaiPoolBackendKinds:
+    @staticmethod
+    def _openai_canned_body() -> bytes:
+        # Minimal OpenAI chat completion response with usage block.
+        return json.dumps(
+            {
+                "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+            }
+        ).encode("utf-8")
+
+    def _write_pool(self, tmp_path: Path, entries: str) -> Path:
+        pool_path = tmp_path / "pool.json"
+        pool_path.write_text(entries, encoding="utf-8")
+        return pool_path
+
+    def _capture_request(self, monkeypatch: pytest.MonkeyPatch) -> Dict[str, Any]:
+        captured: Dict[str, Any] = {}
+
+        class _FakeResp:
+            def __init__(self, body: bytes) -> None:
+                self._body = body
+
+            def read(self) -> bytes:
+                return self._body
+
+            def __enter__(self) -> "_FakeResp":
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                return None
+
+        def _fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> "_FakeResp":
+            captured["url"] = req.full_url
+            captured["headers"] = dict(req.headers)
+            data = req.data
+            assert isinstance(data, (bytes, bytearray)), "fake urlopen expects raw bytes body"
+            captured["payload"] = json.loads(bytes(data).decode("utf-8"))
+            captured["timeout"] = timeout
+            return _FakeResp(self._openai_canned_body())
+
+        monkeypatch.setattr(
+            "grobid_metadata_enricher.clients.urllib.request.urlopen", _fake_urlopen
+        )
+        return captured
+
+    def test_openai_backend_uses_v1_path_and_bearer_token(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pool_path = self._write_pool(
+            tmp_path,
+            """
+            [{"id":"q0","endpoint":"http://10.0.0.5:8000",
+              "deployment":"Qwen/Qwen2.5-7B-Instruct",
+              "apiKey":"sk-local","apiVersion":"unused","kind":"openai"}]
+            """,
+        )
+        captured = self._capture_request(monkeypatch)
+        pool = AoaiPool(pool_path)
+
+        content, usage = pool.chat_with_usage([{"role": "user", "content": "hi"}])
+
+        assert content == "hi"
+        assert usage["total_tokens"] == 4
+        assert captured["url"] == "http://10.0.0.5:8000/v1/chat/completions"
+        # urllib lowercases header names in Request.headers dict.
+        assert captured["headers"]["Authorization"] == "Bearer sk-local"
+        assert captured["payload"]["model"] == "Qwen/Qwen2.5-7B-Instruct"
+
+    def test_aoai_backend_default_kind_still_uses_azure_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Back-compat: no `kind` field means the existing 32-endpoint
+        # aoai_pool.json keeps routing to /openai/deployments/.../chat
+        # with the api-key header. Regression guard for the production
+        # pool format used by .github/workflows/benchmark.yml.
+        pool_path = self._write_pool(
+            tmp_path,
+            """
+            [{"id":"a0","endpoint":"https://eastus.api.cognitive.microsoft.com/",
+              "deployment":"gpt-4o-mini-1","apiKey":"azk","apiVersion":"2024-08-06"}]
+            """,
+        )
+        captured = self._capture_request(monkeypatch)
+        pool = AoaiPool(pool_path)
+
+        pool.chat_with_usage([{"role": "user", "content": "hi"}])
+
+        assert "/openai/deployments/gpt-4o-mini-1/chat/completions" in captured["url"]
+        assert "api-version=2024-08-06" in captured["url"]
+        assert captured["headers"]["Api-key"] == "azk"
+        assert "model" not in captured["payload"]
+
+    def test_rejects_unknown_backend_kind(self, tmp_path: Path) -> None:
+        pool_path = self._write_pool(
+            tmp_path,
+            """
+            [{"id":"x","endpoint":"http://x/","deployment":"d",
+              "apiKey":"k","apiVersion":"v","kind":"bogus"}]
+            """,
+        )
+        with pytest.raises(ValueError, match="Unsupported backend kind"):
+            AoaiPool(pool_path)
+
+    def test_round_robin_alternates_across_mixed_kinds(self, tmp_path: Path) -> None:
+        pool_path = self._write_pool(
+            tmp_path,
+            """
+            [{"id":"a","endpoint":"https://az/","deployment":"d","apiKey":"k","apiVersion":"v"},
+             {"id":"q","endpoint":"http://qwen/","deployment":"Qwen/Qwen2.5-7B-Instruct",
+              "apiKey":"k","apiVersion":"unused","kind":"openai"}]
+            """,
+        )
+        pool = AoaiPool(pool_path)
+        seen = [pool.next_backend().backend_id for _ in range(4)]
+        assert seen == ["a", "q", "a", "q"]

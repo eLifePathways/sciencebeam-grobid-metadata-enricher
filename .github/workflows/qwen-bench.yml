@@ -1,0 +1,119 @@
+name: qwen-bench
+
+# One-shot benchmark dispatch against an externally-hosted Qwen pool.
+# Takes the pool JSON inline as a dispatch input (so the ephemeral spot
+# VM IPs don't have to be committed). Runs the standard bench.yaml smoke
+# (validation split, 25 docs/corpus) and uploads the report as an artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pool_json:
+        description: 'qwen_pool.json contents (kind=openai entries pointing at the VM)'
+        required: true
+        type: string
+      mode:
+        description: 'smoke (25/corpus) or full'
+        required: false
+        default: smoke
+        type: choice
+        options: [smoke, full]
+
+permissions:
+  contents: read
+
+jobs:
+  qwen-bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    services:
+      grobid:
+        image: lfoppiano/grobid:0.9.0-crf
+        ports: ["8070:8070"]
+        options: >-
+          --health-cmd "curl -sf http://localhost:8070/api/isalive || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        run: uv sync --extra bench --extra dev
+
+      - name: Extract pdfalto from Grobid image
+        run: |
+          docker create --name pdfalto_src lfoppiano/grobid:0.9.0-crf
+          docker cp pdfalto_src:/opt/grobid/grobid-home/pdfalto/lin-64/pdfalto ./pdfalto
+          sudo install -m 755 ./pdfalto /usr/local/bin/pdfalto
+          docker rm pdfalto_src
+
+      - name: Materialise Qwen pool JSON
+        env:
+          POOL_JSON: ${{ inputs.pool_json }}
+        run: |
+          mkdir -p runtime
+          printf '%s' "$POOL_JSON" > runtime/qwen_pool.json
+          python3 -c "import json; pool=json.load(open('runtime/qwen_pool.json')); assert all(b.get('kind')=='openai' for b in pool), 'expected all entries kind=openai'; print(f'{len(pool)} backends loaded')"
+
+      - name: Probe Qwen backends
+        run: |
+          python3 - <<'PY'
+          import json, urllib.request
+          pool = json.load(open('runtime/qwen_pool.json'))
+          for b in pool:
+              url = b['endpoint'].rstrip('/') + '/health'
+              try:
+                  with urllib.request.urlopen(url, timeout=10) as r:
+                      print(b['id'], r.status)
+              except Exception as e:
+                  print(b['id'], 'UNREACHABLE', repr(e))
+          PY
+
+      - name: Wait for Grobid
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8070/api/isalive; then
+              echo; echo "Grobid up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "Grobid never became healthy" >&2; exit 1
+
+      - name: Run predict
+        env:
+          PDFALTO_BIN: /usr/local/bin/pdfalto
+          AOAI_POOL_PATH: ${{ github.workspace }}/runtime/qwen_pool.json
+          AOAI_POOL_ROUTING: stable
+        run: |
+          uv run python -m benchmarks.predict \
+            --config benchmarks/bench.yaml \
+            --mode   ${{ inputs.mode }} \
+            --out    benchmarks/runs/${{ github.run_id }} \
+            --pool-path runtime/qwen_pool.json \
+            --aoai-routing stable
+
+      - name: Score
+        run: |
+          uv run python -m benchmarks.score \
+            --run    benchmarks/runs/${{ github.run_id }} \
+            --config benchmarks/bench.yaml \
+            --out    benchmarks/runs/${{ github.run_id }}/report.md
+          echo "===REPORT==="
+          cat benchmarks/runs/${{ github.run_id }}/report.md
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qwen-bench-${{ github.run_id }}
+          path: |
+            benchmarks/runs/${{ github.run_id }}/*.md
+            benchmarks/runs/${{ github.run_id }}/*.json
+            benchmarks/runs/${{ github.run_id }}/*.jsonl
+          retention-days: 30

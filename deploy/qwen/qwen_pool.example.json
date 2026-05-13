@@ -1,0 +1,10 @@
+[
+  {"id":"qwen-0","endpoint":"http://10.0.0.5:8000","deployment":"Qwen/Qwen2.5-7B-Instruct","apiKey":"local","apiVersion":"unused","kind":"openai"},
+  {"id":"qwen-1","endpoint":"http://10.0.0.5:8001","deployment":"Qwen/Qwen2.5-7B-Instruct","apiKey":"local","apiVersion":"unused","kind":"openai"},
+  {"id":"qwen-2","endpoint":"http://10.0.0.5:8002","deployment":"Qwen/Qwen2.5-7B-Instruct","apiKey":"local","apiVersion":"unused","kind":"openai"},
+  {"id":"qwen-3","endpoint":"http://10.0.0.5:8003","deployment":"Qwen/Qwen2.5-7B-Instruct","apiKey":"local","apiVersion":"unused","kind":"openai"},
+  {"id":"qwen-4","endpoint":"http://10.0.0.5:8004","deployment":"Qwen/Qwen2.5-7B-Instruct","apiKey":"local","apiVersion":"unused","kind":"openai"},
+  {"id":"qwen-5","endpoint":"http://10.0.0.5:8005","deployment":"Qwen/Qwen2.5-7B-Instruct","apiKey":"local","apiVersion":"unused","kind":"openai"},
+  {"id":"qwen-6","endpoint":"http://10.0.0.5:8006","deployment":"Qwen/Qwen2.5-7B-Instruct","apiKey":"local","apiVersion":"unused","kind":"openai"},
+  {"id":"qwen-7","endpoint":"http://10.0.0.5:8007","deployment":"Qwen/Qwen2.5-7B-Instruct","apiKey":"local","apiVersion":"unused","kind":"openai"}
+]
