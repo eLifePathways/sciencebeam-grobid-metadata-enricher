@@ -185,7 +185,12 @@ class AoaiPool:
                     return content, usage
                 except urllib.error.HTTPError as error:
                     last_error = error
-                    if error.code in {429, 500, 502, 503, 504}:
+                    # 404 added for the vLLM dead-engine case: engine subprocess
+                    # crashes but FastAPI app stays alive, so /v1/chat/completions
+                    # routes get unregistered and return 404 {"detail":"Not Found"}
+                    # while /health stays 200. With routing="stable", retrying
+                    # with attempt+1 rotates to a different backend in the pool.
+                    if error.code in {404, 429, 500, 502, 503, 504}:
                         time.sleep(2**attempt)
                         continue
                     body = _read_error_body(error)
