@@ -1,0 +1,116 @@
+# Sketch — drop into .github/workflows/qwen-bench.yml when ready.
+# Triggers a one-shot Qwen benchmark by:
+#   1. calling the Cloud Run provisioner to spin a spot a2-highgpu-8g
+#   2. downloading the generated qwen_pool.json
+#   3. running the existing benchmark with --pool-path qwen_pool.json
+#   4. always-step tear-down so a failed run doesn't leak the VM
+name: qwen-bench
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  id-token: write   # for WIF
+
+jobs:
+  qwen-bench:
+    if: github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && github.event.label.name == 'qwen-bench')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    services:
+      grobid:
+        image: lfoppiano/grobid:0.9.0-crf
+        ports: ["8070:8070"]
+        options: >-
+          --health-cmd "curl -sf http://localhost:8070/api/isalive || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        id: gcp-auth
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_BENCH_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Spin up Qwen cluster
+        id: spinup
+        run: |
+          resp=$(curl -fsS -X POST \
+            -H "Authorization: Bearer $(gcloud auth print-identity-token \
+                  --audiences=${{ vars.PROVISIONER_URL }})" \
+            -H 'Content-Type: application/json' \
+            -d '{"model":"Qwen/Qwen2.5-7B-Instruct"}' \
+            "${{ vars.PROVISIONER_URL }}/spin-up")
+          echo "$resp"
+          echo "instance=$(echo "$resp" | jq -r .instance)" >> "$GITHUB_OUTPUT"
+          echo "pool_uri=$(echo "$resp" | jq -r .pool_uri)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch pool JSON
+        run: |
+          mkdir -p runtime
+          gcloud storage cp "${{ steps.spinup.outputs.pool_uri }}" runtime/qwen_pool.json
+          python3 -c "import json; json.load(open('runtime/qwen_pool.json'))"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        run: uv sync --extra bench --extra dev
+
+      - name: Extract pdfalto from Grobid image
+        run: |
+          docker create --name pdfalto_src lfoppiano/grobid:0.9.0-crf
+          docker cp pdfalto_src:/opt/grobid/grobid-home/pdfalto/lin-64/pdfalto ./pdfalto
+          sudo install -m 755 ./pdfalto /usr/local/bin/pdfalto
+
+      - name: Run predict
+        env:
+          PDFALTO_BIN: /usr/local/bin/pdfalto
+          AOAI_POOL_PATH: ${{ github.workspace }}/runtime/qwen_pool.json
+          AOAI_POOL_ROUTING: stable
+        run: |
+          uv run python -m benchmarks.predict \
+            --config benchmarks/bench.yaml \
+            --mode smoke \
+            --out  benchmarks/runs/${{ github.sha }} \
+            --pool-path runtime/qwen_pool.json \
+            --aoai-routing stable
+
+      - name: Score
+        run: |
+          uv run python -m benchmarks.score \
+            --run benchmarks/runs/${{ github.sha }} \
+            --config benchmarks/bench.yaml \
+            --out benchmarks/runs/${{ github.sha }}/report.md
+          cat benchmarks/runs/${{ github.sha }}/report.md
+
+      - name: Tear down Qwen cluster
+        if: always() && steps.spinup.outputs.instance
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $(gcloud auth print-identity-token \
+                  --audiences=${{ vars.PROVISIONER_URL }})" \
+            -H 'Content-Type: application/json' \
+            -d '{"instance":"${{ steps.spinup.outputs.instance }}"}' \
+            "${{ vars.PROVISIONER_URL }}/tear-down"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qwen-bench-run-${{ github.sha }}
+          path: |
+            benchmarks/runs/${{ github.sha }}/*.md
+            benchmarks/runs/${{ github.sha }}/*.json
+            benchmarks/runs/${{ github.sha }}/*.jsonl
+          retention-days: 30
