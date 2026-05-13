@@ -87,22 +87,34 @@ jobs:
           echo "zone=$zone" >> "$GITHUB_OUTPUT"
           test -n "$ip" -a -n "$zone"
 
-      - name: Wait for 8 vLLM replicas to be healthy
+      - name: Wait for 8 vLLM replicas to be ready
         env:
           IP: ${{ steps.provision.outputs.ip }}
+          # When LoRA is loaded, model= the lora name; otherwise base.
+          MODEL_NAME: ${{ inputs.lora_gcs_uri && inputs.lora_name || 'Qwen/Qwen2.5-7B-Instruct' }}
         run: |
+          # vLLM's /health returns 200 as soon as the FastAPI app starts,
+          # which can be BEFORE the engine subprocess finishes registering
+          # /v1/chat/completions. Polling /health alone is not enough: a
+          # half-loaded replica passes /health then 404s on the real call.
+          # Issue a real (tiny) chat-completion against every port; only
+          # count a replica ready when it returns 200 to a real request.
+          payload=$(printf '{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' "$MODEL_NAME")
           deadline=$(( $(date +%s) + 600 ))
           while [ "$(date +%s)" -lt "$deadline" ]; do
             ready=0
             for i in 0 1 2 3 4 5 6 7; do
-              if curl -sf -m 3 "http://${IP}:$((8000+i))/health" >/dev/null; then
-                ready=$((ready+1))
-              fi
+              code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+                -X POST "http://${IP}:$((8000+i))/v1/chat/completions" \
+                -H 'Content-Type: application/json' \
+                --data "$payload")
+              [ "$code" = "200" ] && ready=$((ready+1))
             done
+            echo "[$(date +%H:%M:%S)] $ready/8 replicas accept chat completions"
             if [ "$ready" -eq 8 ]; then echo "ALL_READY"; exit 0; fi
             sleep 10
           done
-          echo "::error::only $ready/8 vLLM replicas healthy after 10 min"
+          echo "::error::only $ready/8 vLLM replicas accepted chat completions after 10 min"
           exit 1
 
       - name: Build pool JSON
