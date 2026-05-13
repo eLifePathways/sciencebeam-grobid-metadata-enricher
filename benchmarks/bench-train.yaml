@@ -83,4 +83,4 @@ llm:
 grobid:
   url: http://localhost:8070/api
   pdfalto_start_page: 1
-  pdfalto_end_page: 5
+  pdfalto_end_page: 99   # full-doc ALTO: content passes need tail text for references and late captions
