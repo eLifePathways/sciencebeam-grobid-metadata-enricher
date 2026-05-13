@@ -44,6 +44,7 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       AOAI_POOL_JSON: ${{ secrets.AOAI_POOL_JSON }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +68,7 @@ jobs:
           pdfalto 2>&1 | head -1 || true
 
       - name: Materialise AOAI pool secret
+        if: env.AOAI_POOL_JSON != ''
         run: |
           mkdir -p runtime
           printf '%s' "$AOAI_POOL_JSON" > runtime/aoai_pool.json
@@ -118,6 +120,9 @@ jobs:
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
           AOAI_POOL_PATH: ${{ github.workspace }}/runtime/aoai_pool.json
+          OPENAI_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_MODEL: qwen/qwen3.5-9b
+          OPENAI_BASE_URL: https://openrouter.ai/api/v1
         run: |
           uv run python -m benchmarks.predict \
             --config benchmarks/bench.yaml \
