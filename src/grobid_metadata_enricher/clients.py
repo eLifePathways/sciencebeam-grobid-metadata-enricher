@@ -252,6 +252,8 @@ class OpenAIClient:
                     "temperature": temperature,
                     "max_tokens": max_tokens,
                 }
+                if "openrouter.ai" in self.base_url:
+                    payload["reasoning"] = {"enabled": False}
                 request = urllib.request.Request(
                     url,
                     data=json.dumps(payload).encode("utf-8"),
