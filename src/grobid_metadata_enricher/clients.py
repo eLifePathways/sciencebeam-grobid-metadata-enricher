@@ -84,6 +84,58 @@ class AoaiBackend:
     api_key: str
     api_version: str
     model: Optional[str] = None
+    # "aoai" (default): Azure OpenAI URL with api-key header.
+    # "openai": OpenAI-compatible /v1/chat/completions with Bearer token
+    # (vLLM, TGI, LiteLLM and any other OpenAI-compat self-hosted server).
+    kind: str = "aoai"
+
+
+_VALID_BACKEND_KINDS = frozenset({"aoai", "openai"})
+
+
+def _build_chat_request(
+    backend: AoaiBackend,
+    messages: List[Dict[str, str]],
+    *,
+    temperature: float,
+    max_tokens: int,
+) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
+    """Build (url, headers, payload) for one chat-completions call.
+
+    AOAI vs OpenAI-compat speak different dialects on the wire even though
+    both expose a chat-completions endpoint: AOAI uses /openai/deployments/
+    {dep}/chat/completions?api-version=... with `api-key:` header and the
+    deployment in the URL path; OpenAI-compat uses /v1/chat/completions
+    with `Authorization: Bearer` and the model name in the JSON body.
+    """
+    if backend.kind == "openai":
+        url = backend.endpoint.rstrip("/") + "/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {backend.api_key}",
+        }
+        payload: Dict[str, Any] = {
+            "model": backend.model or backend.deployment,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        return url, headers, payload
+    url = (
+        backend.endpoint.rstrip("/")
+        + f"/openai/deployments/{backend.deployment}/chat/completions"
+        + f"?api-version={backend.api_version}"
+    )
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": backend.api_key,
+    }
+    payload = {
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    return url, headers, payload
 
 
 class AoaiPool:
@@ -101,9 +153,16 @@ class AoaiPool:
                 api_key=entry["apiKey"],
                 api_version=entry["apiVersion"],
                 model=entry.get("model"),
+                kind=entry.get("kind", "aoai"),
             )
             for entry in raw
         ]
+        for backend in self.backends:
+            if backend.kind not in _VALID_BACKEND_KINDS:
+                raise ValueError(
+                    f"Unsupported backend kind {backend.kind!r} for "
+                    f"{backend.backend_id!r}; expected one of {sorted(_VALID_BACKEND_KINDS)}"
+                )
         if not self.backends:
             raise RuntimeError(f"No backends found in {pool_path}")
         self.routing = routing or os.getenv("AOAI_POOL_ROUTING", self._ROUTING_ROUND_ROBIN)
@@ -153,23 +212,13 @@ class AoaiPool:
             last_error: Optional[Exception] = None
             for attempt in range(max_attempts):
                 backend = self.backend_for_request(messages, step_name=step_name, attempt=attempt)
-                url = (
-                    backend.endpoint.rstrip("/")
-                    + f"/openai/deployments/{backend.deployment}/chat/completions"
-                    + f"?api-version={backend.api_version}"
+                url, headers, payload = _build_chat_request(
+                    backend, messages, temperature=temperature, max_tokens=max_tokens,
                 )
-                payload = {
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                }
                 request = urllib.request.Request(
                     url,
                     data=json.dumps(payload).encode("utf-8"),
-                    headers={
-                        "Content-Type": "application/json",
-                        "api-key": backend.api_key,
-                    },
+                    headers=headers,
                     method="POST",
                 )
                 try:
