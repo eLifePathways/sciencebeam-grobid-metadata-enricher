@@ -96,8 +96,7 @@ jobs:
             --config benchmarks/bench.yaml \
             --mode   ${{ inputs.mode }} \
             --out    benchmarks/runs/${{ github.run_id }} \
-            --pool-path runtime/qwen_pool.json \
-            --aoai-routing stable
+            --pool-path runtime/qwen_pool.json
 
       - name: Score
         run: |
