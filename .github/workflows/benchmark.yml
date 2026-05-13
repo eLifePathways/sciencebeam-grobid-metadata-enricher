@@ -9,13 +9,10 @@ on:
   push:
     branches: [main]
 
-concurrency:
-  group: benchmark-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   benchmark:
-    # Always runs smoke mode. Trigger rules:
+    # Matrix fan-out: same smoke run against grobid and sciencebeam-parser.
+    # Trigger rules:
     #  - workflow_dispatch: manual
     #  - PR labeled 'bench:azure'
     #  - schedule: nightly
@@ -26,24 +23,32 @@ jobs:
       github.event_name == 'schedule' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # 180 covers grobid (~75 min observed) plus the slower sciencebeam
+    # path under linux/amd64 qemu emulation on ubuntu-latest runners.
+    timeout-minutes: 180
     permissions:
       contents: read
       pull-requests: write
 
-    services:
-      grobid:
-        image: lfoppiano/grobid:0.9.0-crf
-        ports: ["8070:8070"]
-        options: >-
-          --health-cmd "curl -sf http://localhost:8070/api/isalive || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 30
+    concurrency:
+      group: benchmark-${{ github.ref }}-${{ matrix.parser }}
+      cancel-in-progress: true
+
+    strategy:
+      fail-fast: false
+      matrix:
+        parser: [grobid, sciencebeam]
 
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       AOAI_POOL_JSON: ${{ secrets.AOAI_POOL_JSON }}
+      PARSER: ${{ matrix.parser }}
+      # Both matrix dims publish their parser on host port 8070 (the
+      # per-matrix `docker run` step swaps the image but keeps the port).
+      # Override resolve_parser_url's per-parser default (which is 8071
+      # for sciencebeam, matching compose.yml's port mapping) so the
+      # sciencebeam dim's predict step actually reaches the container.
+      GROBID_URL: http://localhost:8070/api
 
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +63,7 @@ jobs:
         run: uv sync --extra bench --extra dev
 
       # Reuses the Grobid image's bundled pdfalto (same pattern as ./Dockerfile).
+      # pdfalto is parser-agnostic, used by both matrix dimensions.
       - name: Extract pdfalto from Grobid image
         run: |
           docker create --name pdfalto_src lfoppiano/grobid:0.9.0-crf
@@ -79,32 +85,69 @@ jobs:
           python3 -c "import json; json.load(open('runtime/aoai_pool.json'))" \
             || { echo "::error::AOAI_POOL_JSON secret is not valid JSON"; exit 1; }
 
-      - name: Wait for Grobid
+      # Both backends bind container port 8070; published on host 8070 so
+      # the rest of the workflow uses one URL regardless of matrix.parser.
+      # The sciencebeam image is linux/amd64-only and runs under qemu on
+      # ubuntu-latest; the timeout-minutes setting accounts for that.
+      - name: Start parser
         run: |
-          for i in $(seq 1 60); do
-            if curl -sf http://localhost:8070/api/isalive; then
-              echo; echo "Grobid up"; exit 0
-            fi
-            sleep 2
-          done
-          echo "Grobid never became healthy" >&2; exit 1
+          if [ "${{ matrix.parser }}" = "sciencebeam" ]; then
+            docker run -d --rm --platform linux/amd64 \
+              --name parser -p 8070:8070 \
+              ghcr.io/elifepathways/sciencebeam-parser:0.1.18
+          else
+            docker run -d --rm \
+              --name parser -p 8070:8070 \
+              lfoppiano/grobid:0.9.0-crf
+          fi
 
-      # Grobid + pdfalto are deterministic for a fixed (image tag, dataset revision,
-      # corpus, record_id). Cache their per-record outputs across runs so we only
-      # pay the cold-extraction cost when bench.yaml changes (which busts the key).
-      - name: Restore grobid/pdfalto cache
+      - name: Wait for parser
+        run: |
+          for i in $(seq 1 180); do
+            if curl -sf http://localhost:8070/api/isalive; then
+              echo; echo "${{ matrix.parser }} up after ${i} polls"; exit 0
+            fi
+            sleep 5
+          done
+          echo "${{ matrix.parser }} never became healthy" >&2
+          docker logs parser 2>&1 | tail -50 >&2 || true
+          exit 1
+
+      # Upstream image bug: ghcr.io/elifepathways/sciencebeam-parser:0.1.18
+      # ships the figure-model directory at /root/.cache/sciencebeam-parser/
+      # downloads/<hash>/ without its config.json, so any biorxiv request
+      # 500s. Pull the upstream tarball and copy its files into the running
+      # container's cache. Mirrors the local `make sciencebeam-patch-figure-model`
+      # target.
+      - name: Patch ScienceBeam figure model
+        if: matrix.parser == 'sciencebeam'
+        run: |
+          set -eu
+          URL="https://github.com/eLifePathways/sciencebeam-models/releases/download/biorxiv-grobid/2021-05-11-delft-grobid-figure-biorxiv-10k-auto-v0.0.18-train-1865-e219.tar.gz"
+          HASH_DIR="e3172c0f10622fe2015a65127d5c0fd9-2021-05-11-delft-grobid-figure-biorxiv-10k-auto-v0.0.18-train-1865-e219"
+          mkdir -p /tmp/sb_fig_extract
+          curl -sL --max-time 120 "$URL" -o /tmp/sb_fig.tar.gz
+          tar -xzf /tmp/sb_fig.tar.gz -C /tmp/sb_fig_extract
+          docker cp /tmp/sb_fig_extract/. "parser:/root/.cache/sciencebeam-parser/downloads/${HASH_DIR}/"
+          docker exec parser test -f "/root/.cache/sciencebeam-parser/downloads/${HASH_DIR}/config.json"
+          echo "ScienceBeam figure model patched."
+
+      # Grobid + pdfalto are deterministic for a fixed (image tag, dataset
+      # revision, corpus, record_id). Cache per-parser since the TEI shape
+      # differs between backends; bench.yaml hash busts on config changes.
+      - name: Restore parser cache
         uses: actions/cache@v4
         with:
-          path: benchmarks/cache
-          key: bench-grobid-${{ runner.os }}-0.9.0-crf-${{ hashFiles('benchmarks/bench.yaml') }}
+          path: benchmarks/cache/${{ matrix.parser }}
+          key: bench-${{ matrix.parser }}-${{ runner.os }}-${{ hashFiles('benchmarks/bench.yaml') }}
           restore-keys: |
-            bench-grobid-${{ runner.os }}-0.9.0-crf-
+            bench-${{ matrix.parser }}-${{ runner.os }}-
 
       - name: Hydrate run dir from cache
         run: |
           set -eu
-          SRC=benchmarks/cache
-          DST=benchmarks/runs/${{ github.sha }}
+          SRC=benchmarks/cache/${{ matrix.parser }}
+          DST=benchmarks/runs/${{ github.sha }}-${{ matrix.parser }}
           mkdir -p "$DST"
           if [ -d "$SRC" ]; then
             rsync -a "$SRC"/ "$DST"/
@@ -121,16 +164,17 @@ jobs:
         run: |
           uv run python -m benchmarks.predict \
             --config benchmarks/bench.yaml \
-            --mode smoke \
-            --out  benchmarks/runs/${{ github.sha }} \
+            --mode   smoke \
+            --parser ${{ matrix.parser }} \
+            --out    benchmarks/runs/${{ github.sha }}-${{ matrix.parser }} \
             --pool-path runtime/aoai_pool.json
 
       - name: Mirror TEI/ALTO back to cache
         if: always()
         run: |
           set -eu
-          SRC=benchmarks/runs/${{ github.sha }}
-          DST=benchmarks/cache
+          SRC=benchmarks/runs/${{ github.sha }}-${{ matrix.parser }}
+          DST=benchmarks/cache/${{ matrix.parser }}
           mkdir -p "$DST"
           rsync -a \
             --include='*/' \
@@ -146,13 +190,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run list --workflow benchmark.yml --branch main --status success --limit 1 --json databaseId,headSha > runs.json || true
+          gh run list --workflow benchmark.yml --branch main --status success --limit 5 --json databaseId,headSha > runs.json || true
           if [ -s runs.json ]; then
             RUN_ID=$(python -c "import json,sys; d=json.load(open('runs.json')); print(d[0]['databaseId'] if d else '')")
             HEAD=$(python  -c "import json,sys; d=json.load(open('runs.json')); print(d[0]['headSha']    if d else '')")
             if [ -n "$RUN_ID" ] && [ -n "$HEAD" ]; then
               mkdir -p benchmarks/runs/baseline
-              gh run download "$RUN_ID" --name "benchmark-run-$HEAD" --dir benchmarks/runs/baseline || true
+              gh run download "$RUN_ID" --name "benchmark-run-${HEAD}-${{ matrix.parser }}" --dir benchmarks/runs/baseline || true
               if [ -f benchmarks/runs/baseline/per_document.jsonl ]; then
                 echo "have_baseline=true" >> "$GITHUB_OUTPUT"
               fi
@@ -166,19 +210,19 @@ jobs:
             BASELINE_ARG="--baseline benchmarks/runs/baseline"
           fi
           uv run python -m benchmarks.score \
-            --run benchmarks/runs/${{ github.sha }} \
+            --run    benchmarks/runs/${{ github.sha }}-${{ matrix.parser }} \
             --config benchmarks/bench.yaml \
-            --out benchmarks/runs/${{ github.sha }}/report.md \
+            --out    benchmarks/runs/${{ github.sha }}-${{ matrix.parser }}/report.md \
             $BASELINE_ARG
 
       - name: Upload run artefacts
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-run-${{ github.sha }}
+          name: benchmark-run-${{ github.sha }}-${{ matrix.parser }}
           path: |
-            benchmarks/runs/${{ github.sha }}/*.md
-            benchmarks/runs/${{ github.sha }}/*.json
-            benchmarks/runs/${{ github.sha }}/*.jsonl
+            benchmarks/runs/${{ github.sha }}-${{ matrix.parser }}/*.md
+            benchmarks/runs/${{ github.sha }}-${{ matrix.parser }}/*.json
+            benchmarks/runs/${{ github.sha }}-${{ matrix.parser }}/*.jsonl
           retention-days: 30
 
       # PRs from forked repos do not receive secrets, so BENCH_PG_DSN is empty
@@ -225,9 +269,15 @@ jobs:
 
       - name: Install CML via npm (avoids setup-cml's unauthenticated release fetch)
         run: npm install -g @dvcorg/cml
+
       - name: Post PR comment
         if: github.event_name == 'pull_request'
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cml comment create benchmarks/runs/${{ github.sha }}/report.md
+          {
+            echo "## ${{ matrix.parser }} benchmark"
+            echo
+            cat benchmarks/runs/${{ github.sha }}-${{ matrix.parser }}/report.md
+          } > /tmp/comment.md
+          cml comment create /tmp/comment.md
