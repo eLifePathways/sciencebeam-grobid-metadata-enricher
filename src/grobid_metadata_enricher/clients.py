@@ -202,7 +202,7 @@ class AoaiPool:
         messages: List[Dict[str, str]],
         temperature: float = 0.0,
         max_tokens: int = 800,
-        timeout_seconds: int = 60,
+        timeout_seconds: int = 180,
         max_attempts: int = 3,
         step_name: str = "",
     ) -> Tuple[str, Dict[str, int]]:
@@ -261,7 +261,7 @@ class AoaiPool:
         messages: List[Dict[str, str]],
         temperature: float = 0.0,
         max_tokens: int = 800,
-        timeout_seconds: int = 60,
+        timeout_seconds: int = 180,
         max_attempts: int = 3,
         step_name: str = "",
     ) -> str:
@@ -289,7 +289,7 @@ class OpenAIClient:
         messages: List[Dict[str, str]],
         temperature: float = 0.0,
         max_tokens: int = 800,
-        timeout_seconds: int = 60,
+        timeout_seconds: int = 180,
         max_attempts: int = 3,
         step_name: str = "",
     ) -> Tuple[str, Dict[str, int]]:
@@ -349,7 +349,7 @@ class OpenAIClient:
         messages: List[Dict[str, str]],
         temperature: float = 0.0,
         max_tokens: int = 800,
-        timeout_seconds: int = 60,
+        timeout_seconds: int = 180,
         max_attempts: int = 3,
         step_name: str = "",
     ) -> str:
