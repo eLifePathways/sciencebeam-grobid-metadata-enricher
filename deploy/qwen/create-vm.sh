@@ -69,7 +69,12 @@ for zone in $ZONE_LIST; do
     exit 0
   fi
   last_err="$out"
-  if echo "$last_err" | grep -qE "(stockout|does not have enough resources|RESOURCE_EXHAUSTED)"; then
+  # Stockout signals come back as multi-line, mixed-case, with varying
+  # wording. Normalize whitespace then match case-insensitively on any of
+  # the keywords the API has used: STOCKOUT, RESOURCE_EXHAUSTED,
+  # resource_availability, "enough resources".
+  norm_err="$(echo "$last_err" | tr -s '\n\t ' ' ')"
+  if echo "$norm_err" | grep -qiE "(stockout|resource_exhausted|resource_availability|enough resources)"; then
     echo "[create-vm] stockout in $zone; trying next zone"
     continue
   fi
