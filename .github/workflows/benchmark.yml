@@ -17,12 +17,12 @@ jobs:
   benchmark:
     # Always runs smoke mode. Trigger rules:
     #  - workflow_dispatch: manual
-    #  - PR labeled 'benchmark:smoke'
+    #  - PR labeled 'bench:azure'
     #  - schedule: nightly
     #  - push to main
     if: |
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmark:smoke')) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'bench:azure')) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
