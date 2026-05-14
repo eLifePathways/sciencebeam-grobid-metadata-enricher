@@ -65,6 +65,19 @@ elif [ -n "$LORA_GCS_URI" ]; then
   )
 fi
 
+# Qwen3-Next family (incl. Qwen3.5) hits cudaErrorNotPermitted during
+# cuda-graph capture intermittently in vLLM 0.20.x. Forcing eager mode
+# avoids capture entirely; ~20-30% perf hit, but the bench actually
+# completes. Override with `vllm-enforce-eager=false` metadata if you
+# want to try graph capture again on a future vLLM release.
+EAGER_OVERRIDE="$(meta vllm-enforce-eager)"
+extra_vllm_args=()
+case "${EAGER_OVERRIDE:-auto}" in
+  true)  extra_vllm_args+=(--enforce-eager) ;;
+  false) ;;
+  *)     [[ "$MODEL" == *"Qwen3"* ]] && extra_vllm_args+=(--enforce-eager) ;;
+esac
+
 for i in 0 1 2 3 4 5 6 7; do
   port=$((8000 + i))
   docker run -d --restart=no \
@@ -80,6 +93,7 @@ for i in 0 1 2 3 4 5 6 7; do
     --enable-prefix-caching \
     --max-model-len 32768 \
     --gpu-memory-utilization 0.90 \
+    "${extra_vllm_args[@]}" \
     "${lora_args[@]}"
 done
 
