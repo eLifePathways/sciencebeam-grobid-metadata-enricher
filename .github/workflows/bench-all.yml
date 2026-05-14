@@ -2,8 +2,8 @@ name: bench-all
 
 # Side-by-side benchmark across:
 #   - Grobid (always; computed from the parse step)
-#   - Qwen-base via OpenRouter (no GCP, on the GH runner)
-#   - Qwen + qwen35 LoRA pack via GCP spot 8xA100 (with preemption retry)
+#   - Qwen3-8B base via OpenRouter (no GCP, on the GH runner)
+#   - Qwen3-8B + LoRA pack via GCP spot 8xA100 (with preemption retry)
 #   - Azure gpt-4o-mini via AOAI_POOL_JSON (no GCP)
 #
 # Layout: openrouter + lora run in parallel as separate jobs. Once both
@@ -72,10 +72,10 @@ jobs:
           printf '%s' "$AOAI_POOL_JSON" > runtime/aoai_pool.json
           python3 -c "import json; json.load(open('runtime/aoai_pool.json'))" \
             || { echo "::error::AOAI_POOL_JSON not valid JSON"; exit 1; }
-      - name: Resolve Qwen3.5-9B on OpenRouter
+      - name: Resolve Qwen3-8B on OpenRouter
         id: or_resolve
         run: |
-          or_id=$(uv run python scripts/resolve_openrouter_model.py 'Qwen/Qwen3.5-9B')
+          or_id=$(uv run python scripts/resolve_openrouter_model.py 'Qwen/Qwen3-8B')
           echo "or_id=$or_id" >> "$GITHUB_OUTPUT"
           echo "::notice::OR id resolved: $or_id"
       - name: Build OpenRouter Qwen-base pool JSON
@@ -116,7 +116,8 @@ jobs:
       - name: Predict — Qwen-base via OpenRouter
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
-          # Strip Qwen3.5 thinking-mode CoT for both OR transports.
+          # Qwen3 chat template enables CoT thinking by default; that eats
+          # max_tokens before the answer. Disable for both OR transports.
           LLM_CHAT_TEMPLATE_KWARGS_JSON: '{"enable_thinking": false}'
         run: |
           uv run python -m benchmarks.predict \
@@ -138,7 +139,7 @@ jobs:
           retention-days: 30
 
   # ============================================================
-  # GCP arm: Qwen + qwen35 LoRA pack on spot 8xA100. Retries on
+  # GCP arm: Qwen3-8B + LoRA pack on spot 8xA100. Retries on
   # preemption by re-provisioning a fresh VM and re-running predict.
   # ============================================================
   lora:
@@ -177,19 +178,38 @@ jobs:
           docker cp pdfalto_src:/opt/grobid/grobid-home/pdfalto/lin-64/pdfalto ./pdfalto
           sudo install -m 755 ./pdfalto /usr/local/bin/pdfalto
           docker rm pdfalto_src
-      - name: Build qwen35 LoRA pack
+      - name: Sync Qwen3-8B LoRA pack HF → GCS
         id: pack
         env:
           BUCKET: gs://${{ vars.GCP_LORA_BUCKET }}
+          HF_REPO: elifepathways/sciencebeam-lora-qwen3-8b
         run: |
           set -euo pipefail
-          names=(body_sections_qwen35 figure_captions_qwen35 header_metadata_qwen35 identifiers_qwen35 keywords_qwen35 references_qwen35 table_captions_qwen35)
+          # HF repo layout: <task>/{adapter_config.json, adapter_model.safetensors,
+          # tokenizer*, chat_template*, ...}. snapshot_download lands the whole
+          # thing locally; we mirror each task subdir to gs://<bucket>/lora/qwen3-8b/<task>/
+          # for the startup script (which only speaks GCS, not HF). training_args.bin
+          # and README.md are training-time artifacts vLLM never reads.
+          local_dir=/tmp/hf_lora_pack
+          uv run python - <<PY
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id="$HF_REPO",
+              local_dir="$local_dir",
+              allow_patterns=["*/adapter_*", "*/tokenizer*", "*/chat_template*"],
+          )
+          PY
+          tasks=(body_sections figure_captions header_metadata identifiers keywords references table_captions)
           : > /tmp/lora_pack.tsv
-          for n in "${names[@]}"; do
-            printf "%s\t%s/lora/%s/\n" "$n" "$BUCKET" "$n" >> /tmp/lora_pack.tsv
+          for t in "${tasks[@]}"; do
+            src="$local_dir/$t"
+            gcs="$BUCKET/lora/qwen3-8b/$t/"
+            [ -d "$src" ] || { echo "missing task dir: $src" >&2; exit 1; }
+            gcloud storage rsync --recursive --delete-unmatched-destination-objects "$src" "$gcs"
+            printf "%s\t%s\n" "$t" "$gcs" >> /tmp/lora_pack.tsv
           done
           cat > /tmp/step_lora_map.json <<'EOF'
-          {"HEADER_METADATA":"header_metadata_qwen35","TEI_METADATA":"header_metadata_qwen35","TEI_VALIDATED":"header_metadata_qwen35","CONTENT_BODY_SECTIONS":"body_sections_qwen35","CONTENT_REFERENCES":"references_qwen35","CONTENT_FIGURE_CAPTIONS":"figure_captions_qwen35","CONTENT_TABLE_CAPTIONS":"table_captions_qwen35","KEYWORD_TRANSLATE":"keywords_qwen35","KEYWORD_SELECT":"keywords_qwen35","KEYWORD_EXTRACT":"keywords_qwen35","KEYWORD_INFER":"keywords_qwen35","IDENTIFIER_SELECT":"identifiers_qwen35"}
+          {"HEADER_METADATA":"header_metadata","TEI_METADATA":"header_metadata","TEI_VALIDATED":"header_metadata","CONTENT_BODY_SECTIONS":"body_sections","CONTENT_REFERENCES":"references","CONTENT_FIGURE_CAPTIONS":"figure_captions","CONTENT_TABLE_CAPTIONS":"table_captions","KEYWORD_TRANSLATE":"keywords","KEYWORD_SELECT":"keywords","KEYWORD_EXTRACT":"keywords","KEYWORD_INFER":"keywords","IDENTIFIER_SELECT":"identifiers"}
           EOF
       - name: Provision Qwen spot cluster (initial)
         id: provision
@@ -198,7 +218,11 @@ jobs:
           NAME: ${{ env.VM_NAME }}
           LORA_PACK_FILE: /tmp/lora_pack.tsv
           LORA_MAX_RANK: '16'
-          QWEN_MODEL: 'Qwen/Qwen3.5-9B'
+          QWEN_MODEL: 'Qwen/Qwen3-8B'
+          # Pre-warmed torch.compile + AOT cache pushed from a prior bake VM.
+          # The startup script gsutil-rsyncs this into /var/vllm-compile-cache
+          # so each vLLM container skips ~150s of compile + first-pass warmup.
+          VLLM_CACHE_GCS: gs://${{ vars.GCP_LORA_BUCKET }}/vllm-cache/qwen3-8b/
         run: |
           out=$(bash deploy/qwen/create-vm.sh)
           echo "$out"
@@ -209,7 +233,7 @@ jobs:
           echo "$zone" > /tmp/predict_retry_zone
           test -n "$ip" -a -n "$zone"
       - name: Wait for vLLM
-        run: bash scripts/wait_vllm.sh ${{ steps.provision.outputs.ip }} 'Qwen/Qwen3.5-9B'
+        run: bash scripts/wait_vllm.sh ${{ steps.provision.outputs.ip }} 'Qwen/Qwen3-8B'
       - name: Build initial Qwen pool JSON
         env:
           IP: ${{ steps.provision.outputs.ip }}
@@ -221,21 +245,21 @@ jobs:
           print(json.dumps([
               {"id": f"qwen-{i}",
                "endpoint": f"http://{ip}:{8000+i}",
-               "deployment": "Qwen/Qwen3.5-9B",
+               "deployment": "Qwen/Qwen3-8B",
                "apiKey": "local",
                "apiVersion": "unused",
                "kind": "openai"}
               for i in range(8)
           ], indent=2))
           PY
-      - name: Predict — Qwen + qwen35 LoRA pack (with retry)
+      - name: Predict — Qwen3-8B + LoRA pack (with retry)
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
           PROJECT: ${{ vars.GCP_PROJECT }}
           NAME: ${{ env.VM_NAME }}
           LORA_PACK_FILE: /tmp/lora_pack.tsv
           LORA_MAX_RANK: '16'
-          QWEN_MODEL: 'Qwen/Qwen3.5-9B'
+          QWEN_MODEL: 'Qwen/Qwen3-8B'
           POOL_PATH: runtime/qwen_pool.json
           BENCH_CONFIG: benchmarks/bench.yaml
           BENCH_MODE: ${{ inputs.mode || 'smoke' }}
@@ -293,8 +317,8 @@ jobs:
         run: |
           uv run python -m benchmarks.score_multi \
             --config benchmarks/bench.yaml \
-            --run "Qwen3.5-9B base (OpenRouter)=$RUN_DIR/qwen_base" \
-            --run "Qwen3.5-9B + qwen35 LoRA pack=$RUN_DIR/qwen_lora" \
+            --run "Qwen3-8B base (OpenRouter)=$RUN_DIR/qwen_base" \
+            --run "Qwen3-8B + LoRA pack=$RUN_DIR/qwen_lora" \
             --run "Azure $AZURE_MODEL_LABEL=$RUN_DIR/azure" \
             --out "$RUN_DIR/report.md" \
             --title "bench-all ${{ github.run_id }}"

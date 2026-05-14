@@ -85,20 +85,20 @@ elif [ -n "$LORA_GCS_URI" ]; then
   )
 fi
 
-# Qwen3-Next family (incl. Qwen3.5) hits cudaErrorNotPermitted during
-# cuda-graph capture in vLLM 0.20.x. We tried:
-#   - default (cudagraph_specialize_lora=True): crashes ~always
-#   - cudagraph_specialize_lora=False:         crashes ~50%
-#   - --enforce-eager:                         reliable, but ~25% slower
-# Until upstream vLLM fixes the Qwen3-Next + LoRA graph capture path,
-# we default Qwen3 to eager mode for reliability.
+# Qwen3-Next family (Qwen3.x and Qwen3-Next-* — qwen3_next arch) hits
+# cudaErrorNotPermitted during cuda-graph capture in vLLM 0.20.x. The plain
+# qwen3 arch (Qwen/Qwen3-8B, etc.) is NOT affected and serves fine with
+# full cuda graphs.
 #
 # vllm-graph-mode metadata (default 'auto'):
-#   auto      — Qwen3.x: --enforce-eager (reliable); other: stock
-#   no-lora-graph — Qwen3.x: try cudagraph_specialize_lora=false (faster
-#                   but may crash); for experimentation
+#   auto      — qwen3_next models: --enforce-eager; everything else: stock
+#   no-lora-graph — qwen3_next: cudagraph_specialize_lora=false (faster
+#                   but unreliable); for experimentation
 #   eager     — force --enforce-eager
 #   stock     — no overrides
+is_qwen3_next() {
+  [[ "$1" == *"Qwen3."* ]] || [[ "$1" == *"Qwen3-Next"* ]]
+}
 GRAPH_MODE="$(meta vllm-graph-mode)"; GRAPH_MODE="${GRAPH_MODE:-auto}"
 extra_vllm_args=()
 case "$GRAPH_MODE" in
@@ -108,12 +108,12 @@ case "$GRAPH_MODE" in
   stock)
     ;;
   no-lora-graph)
-    if [[ "$MODEL" == *"Qwen3"* ]]; then
+    if is_qwen3_next "$MODEL"; then
       extra_vllm_args+=(--compilation-config '{"cudagraph_specialize_lora": false}')
     fi
     ;;
   auto)
-    [[ "$MODEL" == *"Qwen3"* ]] && extra_vllm_args+=(--enforce-eager)
+    is_qwen3_next "$MODEL" && extra_vllm_args+=(--enforce-eager)
     ;;
   *)
     echo "[startup] unknown vllm-graph-mode=$GRAPH_MODE; ignoring" >&2
