@@ -24,6 +24,11 @@ on:
         default: SPOT
         type: choice
         options: [SPOT, ON_DEMAND]
+      cache_or_from_run:
+        description: 'Reuse the openrouter arm artifact (Azure + Qwen-base) from a prior successful run id. Skips the openrouter job entirely. Match `mode` of the prior run.'
+        required: false
+        default: ''
+        type: string
   pull_request:
     types: [labeled]
 
@@ -41,7 +46,9 @@ jobs:
   # OpenRouter arms: Azure + Qwen-base via OpenRouter. No GCP.
   # ============================================================
   openrouter:
-    if: github.event_name == 'workflow_dispatch' ||
+    # Skip when cache_or_from_run is set: the score job will pull the OR
+    # arm's artifact from that prior run instead of producing a fresh one.
+    if: (github.event_name == 'workflow_dispatch' && inputs.cache_or_from_run == '') ||
         (github.event_name == 'pull_request' && github.event.label.name == 'bench:all')
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -343,7 +350,10 @@ jobs:
   # ============================================================
   score:
     needs: [openrouter, lora]
-    if: always() && (needs.openrouter.result == 'success' || needs.lora.result == 'success')
+    # Run if any of: openrouter arm succeeded, lora arm succeeded, or the
+    # caller passed cache_or_from_run (in which case openrouter is `skipped`
+    # but its data is available from the prior run).
+    if: always() && (needs.openrouter.result == 'success' || needs.lora.result == 'success' || inputs.cache_or_from_run != '')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -361,11 +371,18 @@ jobs:
       # ancestor IS qwen_lora/ — the artifact lands flat. Download each
       # artifact into the destination where the score step expects it.
       # Each download is optional so one failed arm doesn't block scoring.
+      # When cache_or_from_run is set, the OR artifact comes from that prior
+      # run id instead (and lives under bench-all-or-<that_id>).
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: bench-all-or-${{ github.run_id }}
+          name: bench-all-or-${{ inputs.cache_or_from_run || github.run_id }}
           path: ${{ env.RUN_DIR }}
+          # Cross-run download needs explicit run-id + a token with
+          # `actions: read` on the prior run. The default GITHUB_TOKEN works
+          # for runs in the same repo.
+          run-id: ${{ inputs.cache_or_from_run || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
@@ -398,6 +415,9 @@ jobs:
             echo "::error::no arm produced per_document.jsonl"; exit 1
           fi
           title="bench-all ${{ github.run_id }}"
+          if [ -n "${{ inputs.cache_or_from_run }}" ]; then
+            title="$title (OR cached from run ${{ inputs.cache_or_from_run }})"
+          fi
           if [ "${#missing[@]}" -gt 0 ]; then
             title="$title (missing: ${missing[*]})"
           fi
