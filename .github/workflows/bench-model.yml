@@ -144,18 +144,22 @@ jobs:
         run: |
           set -euo pipefail
           info=$(.venv/bin/python scripts/resolve_hf_ft.py "${{ steps.parse.outputs.model }}")
-          echo "info=$info" >> "$GITHUB_OUTPUT"
-          # Use jq if available, else python
-          repo=$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin)['repo'])")
-          rank=$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin)['rank'])")
+          echo "$info" > /tmp/ft_resolve.json
+          mode=$(python3 -c "import sys,json; print(json.load(open('/tmp/ft_resolve.json'))['mode'])")
+          repo=$(python3 -c "import sys,json; print(json.load(open('/tmp/ft_resolve.json'))['repo'])")
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
-          echo "rank=$rank" >> "$GITHUB_OUTPUT"
+          if [ "$mode" = "single" ]; then
+            rank=$(python3 -c "import sys,json; print(json.load(open('/tmp/ft_resolve.json')).get('rank') or 16)")
+            echo "rank=$rank" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Download FT adapter and upload to GCS
+      - name: Download FT artefact and upload to GCS
         if: steps.parse.outputs.kind == 'ft'
         id: ft_upload
         env:
           REPO: ${{ steps.ft_resolve.outputs.repo }}
+          MODE: ${{ steps.ft_resolve.outputs.mode }}
           BUCKET: gs://${{ vars.GCP_LORA_BUCKET }}
         run: |
           set -euo pipefail
@@ -164,10 +168,30 @@ jobs:
           ts=$(date -u +%Y%m%d%H%M%S)
           local_dir="/tmp/ft/$flat-$ts"
           uv run hf download "$REPO" --local-dir "$local_dir"
-          gcs_uri="$BUCKET/lora/ft/$flat-$ts/"
-          gcloud storage rsync --recursive --delete-unmatched-destination-objects "$local_dir" "$gcs_uri"
-          echo "gcs_uri=$gcs_uri" >> "$GITHUB_OUTPUT"
-          echo "lora_name=$flat" >> "$GITHUB_OUTPUT"
+
+          if [ "$MODE" = "pack" ]; then
+            # Multi-task pack: one HF subdir per task. Upload each to its
+            # own GCS prefix and assemble the lora_pack.tsv that
+            # startup-script-baked.sh expects.
+            : > /tmp/lora_pack.tsv
+            cp "$local_dir/pack.json" /tmp/pack.json
+            python3 -c "import json; print(json.load(open('/tmp/pack.json'))['step_lora_map'])" > /dev/null
+            python3 -c "import json; print(json.dumps(json.load(open('/tmp/pack.json'))['step_lora_map']))" > /tmp/step_lora_map.json
+            for task in $(python3 -c "import json; print(' '.join(json.load(open('/tmp/pack.json'))['tasks']))"); do
+              [ -d "$local_dir/$task" ] || { echo "::error::task subdir $task missing in $REPO"; exit 1; }
+              gcs_uri="$BUCKET/lora/ft/$flat-$ts/$task/"
+              gcloud storage rsync --recursive --delete-unmatched-destination-objects "$local_dir/$task" "$gcs_uri"
+              printf "%s\t%s\n" "$task" "$gcs_uri" >> /tmp/lora_pack.tsv
+            done
+            echo "pack_file=/tmp/lora_pack.tsv" >> "$GITHUB_OUTPUT"
+            echo "step_lora_map_file=/tmp/step_lora_map.json" >> "$GITHUB_OUTPUT"
+          else
+            # Single-adapter mode (back-compat).
+            gcs_uri="$BUCKET/lora/ft/$flat-$ts/"
+            gcloud storage rsync --recursive --delete-unmatched-destination-objects "$local_dir" "$gcs_uri"
+            echo "gcs_uri=$gcs_uri" >> "$GITHUB_OUTPUT"
+            echo "lora_name=$flat" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Provision Qwen spot cluster (FT)
         if: steps.parse.outputs.kind == 'ft'
@@ -175,9 +199,10 @@ jobs:
         env:
           PROJECT: ${{ vars.GCP_PROJECT }}
           NAME: bench-model-${{ github.run_id }}
+          LORA_PACK_FILE: ${{ steps.ft_upload.outputs.pack_file }}
           LORA_GCS_URI: ${{ steps.ft_upload.outputs.gcs_uri }}
           LORA_NAME: ${{ steps.ft_upload.outputs.lora_name }}
-          LORA_MAX_RANK: ${{ steps.ft_resolve.outputs.rank }}
+          LORA_MAX_RANK: ${{ steps.ft_resolve.outputs.rank || 16 }}
           QWEN_MODEL: ${{ steps.parse.outputs.model }}
         run: |
           out=$(bash deploy/qwen/create-vm.sh)
@@ -215,16 +240,23 @@ jobs:
         if: steps.parse.outputs.kind == 'ft'
         env:
           IP: ${{ steps.provision.outputs.ip }}
+          MODE: ${{ steps.ft_resolve.outputs.mode }}
           LORA_NAME: ${{ steps.ft_upload.outputs.lora_name }}
+          BASE_MODEL: ${{ steps.parse.outputs.model }}
         run: |
           mkdir -p runtime
-          python3 - <<PY > runtime/pool.json
+          # Pack mode: deployment = base model name; per-stage routing
+          # picks the LoRA via STEP_LORA_MAP_JSON. Single mode: deployment
+          # = the one lora name registered with vLLM.
+          python3 - <<'PY' > runtime/pool.json
           import json, os
-          ip = os.environ["IP"]; name = os.environ["LORA_NAME"]
+          ip = os.environ["IP"]
+          mode = os.environ["MODE"]
+          deployment = os.environ["BASE_MODEL"] if mode == "pack" else os.environ["LORA_NAME"]
           print(json.dumps([
               {"id": f"qwen-{i}",
                "endpoint": f"http://{ip}:{8000+i}",
-               "deployment": name,
+               "deployment": deployment,
                "apiKey": "local",
                "apiVersion": "unused",
                "kind": "openai"}
@@ -239,7 +271,13 @@ jobs:
           # Qwen3-family thinking mode safety. AOAI and non-Qwen-3 backends
           # ignore the field, so it's safe to leave set globally.
           LLM_CHAT_TEMPLATE_KWARGS_JSON: '{"enable_thinking": false}'
+          STEP_LORA_MAP_FILE: ${{ steps.ft_upload.outputs.step_lora_map_file }}
         run: |
+          if [ -n "${STEP_LORA_MAP_FILE:-}" ] && [ -f "$STEP_LORA_MAP_FILE" ]; then
+            STEP_LORA_MAP_JSON="$(cat "$STEP_LORA_MAP_FILE")"
+            export STEP_LORA_MAP_JSON
+            echo "::notice::pack mode — STEP_LORA_MAP_JSON has $(echo "$STEP_LORA_MAP_JSON" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))') entries"
+          fi
           uv run python -m benchmarks.predict \
             --config benchmarks/bench.yaml \
             --mode   ${{ inputs.mode || 'smoke' }} \
