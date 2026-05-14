@@ -52,12 +52,15 @@ def train_one(
     _heartbeat(task, device, "boot", train=str(train_path), val=str(val_path),
                maxlen=maxlen, base=base_model)
 
+    # Unsloth MUST be imported before trl/transformers/datasets. Its
+    # monkey-patches only attach cleanly when nothing downstream has
+    # cached references to the originals.
     import torch
-    from datasets import load_dataset
-    from transformers import EarlyStoppingCallback, TrainerCallback
-    from trl import SFTConfig, SFTTrainer
     from unsloth import FastLanguageModel
     from unsloth.chat_templates import train_on_responses_only
+    from trl import SFTConfig, SFTTrainer
+    from transformers import EarlyStoppingCallback, TrainerCallback
+    from datasets import load_dataset
 
     if not torch.cuda.is_available():
         sys.exit(f"FATAL|{task}|no cuda")
@@ -133,10 +136,6 @@ def train_one(
     # Qwen3.5 ships a VLM processor; pass the inner text tokenizer to
     # SFTTrainer so trl's tokenizer-only paths work.
     text_tok = getattr(tok, "tokenizer", tok)
-    # trl >= 2026.5 ships SFTConfig with a literal '<EOS_TOKEN>' sentinel
-    # default that the trainer no longer resolves; assigning the actual
-    # tokenizer EOS up front sidesteps the in-vocab check.
-    cfg.eos_token = text_tok.eos_token
     trainer = SFTTrainer(
         model=model, args=cfg, train_dataset=train_ds, eval_dataset=val_ds,
         processing_class=text_tok,
