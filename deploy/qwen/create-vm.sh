@@ -92,6 +92,11 @@ case "$PROVISIONING_MODEL" in
     echo "[create-vm] unknown PROVISIONING_MODEL=$PROVISIONING_MODEL" >&2; exit 2
     ;;
 esac
+# A100 (and every other accelerator-attached VM) cannot live-migrate, so
+# maintenance-policy MUST be TERMINATE. SPOT's --instance-termination-action
+# implicitly forces this; ON_DEMAND defaults to MIGRATE, which gcloud rejects
+# for any GPU-bearing instance ("onHostMaintenance must be TERMINATE").
+provisioning_args+=(--maintenance-policy=TERMINATE)
 
 last_err=""
 for zone in $ZONE_LIST; do
