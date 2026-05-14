@@ -130,9 +130,13 @@ def train_one(
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss", greater_is_better=False,
     )
+    # Qwen3.5 ships a VLM processor; SFTTrainer's <EOS_TOKEN> placeholder
+    # resolution doesn't traverse into processor.tokenizer. Pass the inner
+    # text tokenizer.
+    text_tok = getattr(tok, "tokenizer", tok)
     trainer = SFTTrainer(
         model=model, args=cfg, train_dataset=train_ds, eval_dataset=val_ds,
-        processing_class=tok,
+        processing_class=text_tok,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=patience), _HB()],
     )
     trainer = train_on_responses_only(
