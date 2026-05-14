@@ -1,0 +1,286 @@
+name: bench-model
+
+# Label-driven single-LLM benchmark.
+#
+# Trigger by labelling a PR:
+#   bench:<HF-id>       -> via OpenRouter, no GCP (e.g. bench:Qwen/Qwen2.5-7B-Instruct)
+#   bench:FT/<HF-id>    -> via vLLM-on-GCP using elifepathways/<flat-base>-ft LoRA
+#
+# Existing labels (bench:all, bench:qwen, bench:azure) are excluded by the
+# `contains(label.name, '/')` guard — only labels containing a slash hit
+# this workflow.
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      model_spec:
+        description: 'Model spec (HF id, or FT/<HF id>). Same syntax as the PR label without the bench: prefix.'
+        required: true
+        type: string
+      mode:
+        description: 'Bench mode'
+        required: false
+        default: smoke
+        type: choice
+        options: [smoke, full]
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  bench-model:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request'
+       && startsWith(github.event.label.name, 'bench:')
+       && contains(github.event.label.name, '/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      RUN_DIR: benchmarks/runs/${{ github.run_id }}
+
+    services:
+      grobid:
+        image: lfoppiano/grobid:0.9.0-crf
+        ports: ["8070:8070"]
+        options: >-
+          --health-cmd "curl -sf http://localhost:8070/api/isalive || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse label
+        id: parse
+        env:
+          LABEL_NAME: ${{ github.event.label.name }}
+          DISPATCH_SPEC: ${{ inputs.model_spec }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            spec="$DISPATCH_SPEC"
+          else
+            # Strip leading "bench:"
+            spec="${LABEL_NAME#bench:}"
+          fi
+          if [ -z "$spec" ]; then
+            echo "::error::could not parse model spec from $LABEL_NAME"
+            exit 1
+          fi
+          # FT path detection: spec starts with "FT/"
+          if [[ "$spec" == FT/* ]]; then
+            kind=ft
+            model="${spec#FT/}"
+          else
+            kind=or
+            model="$spec"
+          fi
+          echo "kind=$kind"   >> "$GITHUB_OUTPUT"
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          echo "::notice::bench-model kind=$kind model=$model"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        run: uv sync --extra bench --extra dev
+
+      - name: Extract pdfalto from Grobid image
+        run: |
+          docker create --name pdfalto_src lfoppiano/grobid:0.9.0-crf
+          docker cp pdfalto_src:/opt/grobid/grobid-home/pdfalto/lin-64/pdfalto ./pdfalto
+          sudo install -m 755 ./pdfalto /usr/local/bin/pdfalto
+          docker rm pdfalto_src
+
+      # === OpenRouter path: probe + pool JSON, no GCP. ==========================
+      - name: Resolve OpenRouter model id
+        if: steps.parse.outputs.kind == 'or'
+        id: or_resolve
+        run: |
+          set -euo pipefail
+          or_id=$(.venv/bin/python scripts/resolve_openrouter_model.py "${{ steps.parse.outputs.model }}")
+          echo "or_id=$or_id" >> "$GITHUB_OUTPUT"
+          echo "::notice::OpenRouter id: $or_id"
+
+      - name: Build OpenRouter pool JSON
+        if: steps.parse.outputs.kind == 'or'
+        run: |
+          mkdir -p runtime
+          python3 - <<PY > runtime/pool.json
+          import json, os
+          print(json.dumps([{
+              "id": "or-0",
+              "endpoint": "https://openrouter.ai/api",
+              "deployment": "${{ steps.or_resolve.outputs.or_id }}",
+              "apiKey": os.environ["OPENROUTER_API_KEY"],
+              "apiVersion": "unused",
+              "kind": "openai",
+          }], indent=2))
+          PY
+
+      # === FT path: HF → GCS rsync → existing create-vm flow. ==================
+      - uses: google-github-actions/auth@v2
+        if: steps.parse.outputs.kind == 'ft'
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_BENCH_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        if: steps.parse.outputs.kind == 'ft'
+
+      - name: Resolve HF FT repo
+        if: steps.parse.outputs.kind == 'ft'
+        id: ft_resolve
+        run: |
+          set -euo pipefail
+          info=$(.venv/bin/python scripts/resolve_hf_ft.py "${{ steps.parse.outputs.model }}")
+          echo "info=$info" >> "$GITHUB_OUTPUT"
+          # Use jq if available, else python
+          repo=$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin)['repo'])")
+          rank=$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin)['rank'])")
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "rank=$rank" >> "$GITHUB_OUTPUT"
+
+      - name: Download FT adapter and upload to GCS
+        if: steps.parse.outputs.kind == 'ft'
+        id: ft_upload
+        env:
+          REPO: ${{ steps.ft_resolve.outputs.repo }}
+          BUCKET: gs://${{ vars.GCP_LORA_BUCKET }}
+        run: |
+          set -euo pipefail
+          uv pip install huggingface_hub
+          flat=$(echo "$REPO" | tr '/' '_')
+          ts=$(date -u +%Y%m%d%H%M%S)
+          local_dir="/tmp/ft/$flat-$ts"
+          uv run hf download "$REPO" --local-dir "$local_dir"
+          gcs_uri="$BUCKET/lora/ft/$flat-$ts/"
+          gcloud storage rsync --recursive --delete-unmatched-destination-objects "$local_dir" "$gcs_uri"
+          echo "gcs_uri=$gcs_uri" >> "$GITHUB_OUTPUT"
+          echo "lora_name=$flat" >> "$GITHUB_OUTPUT"
+
+      - name: Provision Qwen spot cluster (FT)
+        if: steps.parse.outputs.kind == 'ft'
+        id: provision
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          NAME: bench-model-${{ github.run_id }}
+          LORA_GCS_URI: ${{ steps.ft_upload.outputs.gcs_uri }}
+          LORA_NAME: ${{ steps.ft_upload.outputs.lora_name }}
+          LORA_MAX_RANK: ${{ steps.ft_resolve.outputs.rank }}
+          QWEN_MODEL: ${{ steps.parse.outputs.model }}
+        run: |
+          out=$(bash deploy/qwen/create-vm.sh)
+          echo "$out"
+          ip=$(echo "$out" | awk -F= '/^EXTERNAL_IP=/ {print $2}' | tail -1)
+          zone=$(echo "$out" | awk -F= '/^ZONE=/ {print $2}' | tail -1)
+          echo "ip=$ip"     >> "$GITHUB_OUTPUT"
+          echo "zone=$zone" >> "$GITHUB_OUTPUT"
+          test -n "$ip" -a -n "$zone"
+
+      - name: Wait for vLLM
+        if: steps.parse.outputs.kind == 'ft'
+        env:
+          IP: ${{ steps.provision.outputs.ip }}
+          MODEL_NAME: ${{ steps.parse.outputs.model }}
+        run: |
+          payload=$(printf '{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' "$MODEL_NAME")
+          deadline=$(( $(date +%s) + 1500 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            ready=0
+            for i in 0 1 2 3 4 5 6 7; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+                -X POST "http://${IP}:$((8000+i))/v1/chat/completions" \
+                -H 'Content-Type: application/json' --data "$payload" || echo "000")
+              [ "$code" = "200" ] && ready=$((ready+1))
+            done
+            echo "[$(date +%H:%M:%S)] $ready/8 vLLM ready"
+            [ "$ready" -eq 8 ] && exit 0
+            sleep 15
+          done
+          echo "::error::only $ready/8 vLLM replicas ready after 25 min"
+          exit 1
+
+      - name: Build FT pool JSON
+        if: steps.parse.outputs.kind == 'ft'
+        env:
+          IP: ${{ steps.provision.outputs.ip }}
+          LORA_NAME: ${{ steps.ft_upload.outputs.lora_name }}
+        run: |
+          mkdir -p runtime
+          python3 - <<PY > runtime/pool.json
+          import json, os
+          ip = os.environ["IP"]; name = os.environ["LORA_NAME"]
+          print(json.dumps([
+              {"id": f"qwen-{i}",
+               "endpoint": f"http://{ip}:{8000+i}",
+               "deployment": name,
+               "apiKey": "local",
+               "apiVersion": "unused",
+               "kind": "openai"}
+              for i in range(8)
+          ], indent=2))
+          PY
+
+      # === Predict + score (common). ===========================================
+      - name: Run predict
+        env:
+          PDFALTO_BIN: /usr/local/bin/pdfalto
+          # Qwen3-family thinking mode safety. AOAI and non-Qwen-3 backends
+          # ignore the field, so it's safe to leave set globally.
+          LLM_CHAT_TEMPLATE_KWARGS_JSON: '{"enable_thinking": false}'
+        run: |
+          uv run python -m benchmarks.predict \
+            --config benchmarks/bench.yaml \
+            --mode   ${{ inputs.mode || 'smoke' }} \
+            --out    "$RUN_DIR" \
+            --pool-path runtime/pool.json
+
+      - name: Score
+        run: |
+          uv run python -m benchmarks.score \
+            --run $RUN_DIR \
+            --config benchmarks/bench.yaml \
+            --out $RUN_DIR/report.md
+          echo "===REPORT==="
+          cat $RUN_DIR/report.md
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-model-${{ github.run_id }}
+          path: |
+            ${{ env.RUN_DIR }}/report.md
+            ${{ env.RUN_DIR }}/per_document.jsonl
+            ${{ env.RUN_DIR }}/run_record.json
+            ${{ env.RUN_DIR }}/errors.json
+          retention-days: 30
+
+      - name: Install CML
+        if: github.event_name == 'pull_request'
+        run: npm install -g @dvcorg/cml
+      - name: Post PR comment
+        if: github.event_name == 'pull_request'
+        env:
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cml comment create $RUN_DIR/report.md
+
+      - name: Tear down Qwen spot cluster
+        if: always() && steps.parse.outputs.kind == 'ft' && steps.provision.outputs.ip
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT }}
+        run: |
+          gcloud compute instances delete bench-model-${{ github.run_id }} \
+            --project="$PROJECT" \
+            --zone="${{ steps.provision.outputs.zone }}" \
+            --quiet || true
