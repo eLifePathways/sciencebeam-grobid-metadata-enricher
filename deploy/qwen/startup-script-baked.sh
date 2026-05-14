@@ -69,16 +69,32 @@ elif [ -n "$LORA_GCS_URI" ]; then
 fi
 
 # Qwen3-Next family (incl. Qwen3.5) hits cudaErrorNotPermitted during
-# cuda-graph capture intermittently in vLLM 0.20.x. Forcing eager mode
-# avoids capture entirely; ~20-30% perf hit, but the bench actually
-# completes. Override with `vllm-enforce-eager=false` metadata if you
-# want to try graph capture again on a future vLLM release.
-EAGER_OVERRIDE="$(meta vllm-enforce-eager)"
+# cuda-graph capture in vLLM 0.20.x — but only on the LoRA-specialized
+# capture path (cudagraph_specialize_lora=True). Disabling JUST that
+# specialization keeps regular cuda graphs (the ~25% speedup) while
+# avoiding the crash. --enforce-eager remains the fallback.
+#
+# vllm-graph-mode metadata (default 'auto'):
+#   auto    — Qwen3.x: --compilation-config disabling LoRA specialization;
+#             other models: stock cuda graphs
+#   eager   — pass --enforce-eager (full fallback)
+#   stock   — no overrides (full cuda graphs incl. LoRA specialization)
+GRAPH_MODE="$(meta vllm-graph-mode)"; GRAPH_MODE="${GRAPH_MODE:-auto}"
 extra_vllm_args=()
-case "${EAGER_OVERRIDE:-auto}" in
-  true)  extra_vllm_args+=(--enforce-eager) ;;
-  false) ;;
-  *)     [[ "$MODEL" == *"Qwen3"* ]] && extra_vllm_args+=(--enforce-eager) ;;
+case "$GRAPH_MODE" in
+  eager)
+    extra_vllm_args+=(--enforce-eager)
+    ;;
+  stock)
+    ;;
+  auto)
+    if [[ "$MODEL" == *"Qwen3"* ]]; then
+      extra_vllm_args+=(--compilation-config '{"cudagraph_specialize_lora": false}')
+    fi
+    ;;
+  *)
+    echo "[startup] unknown vllm-graph-mode=$GRAPH_MODE; ignoring" >&2
+    ;;
 esac
 
 for i in 0 1 2 3 4 5 6 7; do

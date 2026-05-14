@@ -23,7 +23,9 @@ set -uo pipefail
 : "${POOL_PATH:?}" "${BENCH_CONFIG:?}" "${BENCH_MODE:?}" "${BENCH_OUT:?}"
 LORA_MAX_RANK="${LORA_MAX_RANK:-16}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
-PREDICT_DEADLINE_SECONDS="${PREDICT_DEADLINE_SECONDS:-2700}"
+# 90-min cap per attempt: Qwen3.5 in --enforce-eager mode takes ~45-50 min
+# on the 149-doc smoke bench (~2-3x slower than Qwen2.5 with cuda graphs).
+PREDICT_DEADLINE_SECONDS="${PREDICT_DEADLINE_SECONDS:-5400}"
 
 current_zone_file="/tmp/predict_retry_zone"
 
@@ -88,11 +90,16 @@ vm_is_alive() {
 
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   echo "=== predict attempt $attempt/$MAX_ATTEMPTS ==="
-  if predict_once; then
+  # NB: capture exit code BEFORE any `if` test. Bash sets $? to 0 after a
+  # failed `if cmd; then ...; fi` (no branch executed), masking the real
+  # exit code. Previously this made a `timeout`-killed predict look like
+  # rc=0 and the wrapper bailed instead of retrying.
+  predict_once
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
     echo "[retry] predict succeeded on attempt $attempt"
     exit 0
   fi
-  rc=$?
   echo "[retry] predict failed rc=$rc"
   if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
     if ! vm_is_alive; then

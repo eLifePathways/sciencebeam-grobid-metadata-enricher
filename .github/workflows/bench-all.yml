@@ -278,14 +278,17 @@ jobs:
         with:
           python-version: "3.11"
       - run: uv sync --extra bench --extra dev
+      # The upload-artifact action stores files with their full path relative
+      # to GITHUB_WORKSPACE. Downloading with path:. expands them back to the
+      # same layout — i.e., $RUN_DIR/{azure,qwen_base,qwen_lora}/per_document.jsonl.
       - uses: actions/download-artifact@v4
         with:
           name: bench-all-or-${{ github.run_id }}
-          path: ${{ env.RUN_DIR }}
+          path: .
       - uses: actions/download-artifact@v4
         with:
           name: bench-all-lora-${{ github.run_id }}
-          path: ${{ env.RUN_DIR }}
+          path: .
       - name: Score (side-by-side)
         run: |
           uv run python -m benchmarks.score_multi \
