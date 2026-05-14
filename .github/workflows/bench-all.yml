@@ -226,11 +226,15 @@ jobs:
           LORA_MAX_RANK: '16'
           QWEN_MODEL: 'Qwen/Qwen3-8B'
           PROVISIONING_MODEL: ${{ inputs.provisioning || 'SPOT' }}
-          # On-demand A100 quota is currently approved only in us-central1
-          # (8 GPUs / 96 A2-CPUs). For ON_DEMAND runs we constrain ZONE_LIST
-          # so create-vm.sh doesn't burn time on regions without the quota.
-          # SPOT runs use the default region-interleaved list.
-          ZONE_LIST: ${{ inputs.provisioning == 'ON_DEMAND' && 'us-central1-a us-central1-b us-central1-c us-central1-f' || '' }}
+          # On-demand A100 quota auto-approved 2026-05-14 in us-central1 +
+          # us-east1 + europe-west4 (8 GPUs / 96 A2-CPUs per region). For
+          # ON_DEMAND runs we walk those three regions; SPOT uses create-vm.sh's
+          # default region-interleaved list.
+          ZONE_LIST: ${{ inputs.provisioning == 'ON_DEMAND' && 'us-east1-b us-east1-c us-east1-d us-central1-a us-central1-b us-central1-c us-central1-f europe-west4-a europe-west4-b' || '' }}
+          # 900s per zone: STAGING for 8xA100 can legitimately take ~5-10 min.
+          # 180s was killing healthy creates and leaking orphans that held
+          # quota, making subsequent zones fail with QUOTA_EXCEEDED.
+          PER_ZONE_TIMEOUT: '900'
           # Pre-warmed torch.compile + AOT cache pushed from a prior bake VM.
           # The startup script gsutil-rsyncs this into /var/vllm-compile-cache
           # so each vLLM container skips ~150s of compile + first-pass warmup.
@@ -273,7 +277,8 @@ jobs:
           LORA_MAX_RANK: '16'
           QWEN_MODEL: 'Qwen/Qwen3-8B'
           PROVISIONING_MODEL: ${{ inputs.provisioning || 'SPOT' }}
-          ZONE_LIST: ${{ inputs.provisioning == 'ON_DEMAND' && 'us-central1-a us-central1-b us-central1-c us-central1-f' || '' }}
+          ZONE_LIST: ${{ inputs.provisioning == 'ON_DEMAND' && 'us-east1-b us-east1-c us-east1-d us-central1-a us-central1-b us-central1-c us-central1-f europe-west4-a europe-west4-b' || '' }}
+          PER_ZONE_TIMEOUT: '900'
           POOL_PATH: runtime/qwen_pool.json
           BENCH_CONFIG: benchmarks/bench.yaml
           BENCH_MODE: ${{ inputs.mode || 'smoke' }}
@@ -291,6 +296,22 @@ jobs:
             ${{ env.RUN_DIR }}/qwen_lora/run_record.json
             ${{ env.RUN_DIR }}/qwen_lora/errors.json
           retention-days: 30
+      - name: Push torch.compile cache to GCS
+        # Run only on successful predict so we don't poison the cache with
+        # half-compiled artifacts. The /var/vllm-compile-cache dir is the
+        # docker bind-mount target the startup script set up; copying it
+        # back to gs://<bucket>/vllm-cache/qwen3-8b/ shaves ~2.5min off
+        # subsequent cold-starts (Dynamo bytecode + Inductor compile).
+        if: success()
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          BUCKET: gs://${{ vars.GCP_LORA_BUCKET }}
+        run: |
+          zone=$(cat /tmp/predict_retry_zone 2>/dev/null || echo "${{ steps.provision.outputs.zone }}")
+          [ -n "$zone" ] || { echo "no zone recorded; skipping cache push"; exit 0; }
+          gcloud compute ssh "$VM_NAME" --project="$PROJECT" --zone="$zone" \
+            --command="sudo gcloud storage rsync --recursive --delete-unmatched-destination-objects /var/vllm-compile-cache $BUCKET/vllm-cache/qwen3-8b/" \
+            || echo "::warning::compile cache push failed (non-fatal)"
       - name: Tear down Qwen spot cluster
         if: always()
         env:
