@@ -154,6 +154,7 @@ def _evaluate_one_vllm(
     results_path: Path,
     maxlen: int,
     max_new: int,
+    no_lora: bool = False,
 ) -> None:
     # Base model from the adapter config so vLLM downloads/loads it consistently.
     cfg = json.loads((adapter_path / "adapter_config.json").read_text())
@@ -162,7 +163,7 @@ def _evaluate_one_vllm(
         sys.exit(f"FATAL|{task}|adapter_config.json has no base_model_name_or_path")
 
     t0 = time.time()
-    _heartbeat(task, device, "loading_vllm", base=base_model)
+    _heartbeat(task, device, "loading_vllm", base=base_model, no_lora=no_lora)
     # vLLM 0.11.0 reads PreTrainedTokenizer.all_special_tokens_extended at LLM
     # construction; transformers 5.x dropped that attribute on slow tokenizers.
     from transformers import PreTrainedTokenizerBase
@@ -172,19 +173,19 @@ def _evaluate_one_vllm(
         )
     from vllm import LLM, SamplingParams
     from vllm.lora.request import LoRARequest
-    llm = LLM(
+    llm_kwargs = dict(
         model=base_model,
         dtype="bfloat16",
         max_model_len=maxlen,
         gpu_memory_utilization=0.80,
         enforce_eager=False,
-        enable_lora=True,
-        max_lora_rank=64,  # >= adapter rank (16)
-        max_loras=1,
         seed=42,
     )
+    if not no_lora:
+        llm_kwargs.update(enable_lora=True, max_lora_rank=64, max_loras=1)
+    llm = LLM(**llm_kwargs)
     tok = llm.get_tokenizer()
-    lora_req = LoRARequest("eval_adapter", 1, str(adapter_path))
+    lora_req = None if no_lora else LoRARequest("eval_adapter", 1, str(adapter_path))
     _heartbeat(task, device, "loaded", seconds=round(time.time() - t0, 1))
 
     docs = [json.loads(line) for line in test_path.open()]
@@ -286,6 +287,7 @@ def evaluate_one(
     maxlen: int,
     max_new: int,
     engine: str = "hf",
+    no_lora: bool = False,
 ) -> None:
     os.environ["CUDA_VISIBLE_DEVICES"] = str(device)
 
@@ -293,17 +295,19 @@ def evaluate_one(
         if not p.exists():
             sys.exit(f"FATAL|{task}|missing {p}")
 
-    _heartbeat(task, device, "boot", adapter=str(adapter_path), test=str(test_path), engine=engine)
+    _heartbeat(task, device, "boot", adapter=str(adapter_path), test=str(test_path), engine=engine, no_lora=no_lora)
 
     if engine == "vllm":
         _evaluate_one_vllm(
             task=task, device=device, adapter_path=adapter_path,
             test_path=test_path, results_path=results_path,
-            maxlen=maxlen, max_new=max_new,
+            maxlen=maxlen, max_new=max_new, no_lora=no_lora,
         )
         return
     if engine != "hf":
         sys.exit(f"FATAL|{task}|unknown engine: {engine}")
+    if no_lora:
+        sys.exit(f"FATAL|{task}|--no-lora is only supported with --engine vllm")
 
     import torch
     from unsloth import FastLanguageModel
@@ -485,6 +489,7 @@ def launch_all(
     max_new: int,
     shards_per_task: int = 1,
     engine: str = "hf",
+    no_lora: bool = False,
 ) -> None:
     if shards_per_task < 1:
         raise ValueError(f"shards_per_task must be >= 1, got {shards_per_task}")
@@ -524,6 +529,8 @@ def launch_all(
                 "--max-new", str(max_new),
                 "--engine", engine,
             ]
+            if no_lora:
+                cmd.append("--no-lora")
             log_name = f"{task}_eval.log" if shards_per_task == 1 else f"{task}_shard{s}.log"
             log = log_dir / log_name
             p = subprocess.Popen(cmd, stdout=log.open("ab"), stderr=subprocess.STDOUT,
@@ -569,6 +576,8 @@ def main() -> None:
     one.add_argument("--maxlen", type=int, default=8192)
     one.add_argument("--max-new", type=int, default=1500)
     one.add_argument("--engine", default="hf", choices=("hf", "vllm"))
+    one.add_argument("--no-lora", action="store_true",
+                     help="vLLM only: skip the LoRA adapter and evaluate the base model.")
 
     allp = sub.add_parser("all", help="launch eval for all tasks across GPUs 0..N-1")
     allp.add_argument("--tasks", nargs="+", default=list(TASKS))
@@ -587,6 +596,9 @@ def main() -> None:
     allp.add_argument("--engine", default="hf", choices=("hf", "vllm"),
                       help="hf = transformers + Unsloth (single-stream); "
                            "vllm = continuous-batched (much faster, but ~30-60s extra cold-start).")
+    allp.add_argument("--no-lora", action="store_true",
+                      help="vLLM only: skip the LoRA adapter and evaluate the base model. "
+                           "Use to measure the lift the LoRA actually buys.")
 
     args = ap.parse_args()
 
@@ -595,7 +607,7 @@ def main() -> None:
             task=args.task, device=args.device,
             adapter_path=args.adapter, test_path=args.test,
             results_path=args.results, maxlen=args.maxlen, max_new=args.max_new,
-            engine=args.engine,
+            engine=args.engine, no_lora=args.no_lora,
         )
         return
 
@@ -605,6 +617,7 @@ def main() -> None:
             adapter_dir=args.adapter_dir, out_dir=args.out_dir, log_dir=args.log_dir,
             split=args.split, maxlen=args.maxlen, max_new=args.max_new,
             shards_per_task=args.shards_per_task, engine=args.engine,
+            no_lora=args.no_lora,
         )
 
 
