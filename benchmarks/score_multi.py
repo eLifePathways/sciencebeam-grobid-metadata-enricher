@@ -15,8 +15,9 @@ same record). The LLM metrics column is rendered once per labelled run.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import yaml
@@ -88,15 +89,39 @@ def _bold_winner(cells: List[str], scores: List[float]) -> List[str]:
     ]
 
 
+def _backend_description(record: Optional[Dict[str, Any]]) -> str:
+    """One-line summary of an LLM backend: model + LoRA pack + parser image."""
+    if not record:
+        return "(unknown)"
+    llm = record.get("llm") or {}
+    model = llm.get("model") or "?"
+    parts = [f"model=`{model}`"]
+    lora_map = llm.get("step_lora_map") or {}
+    if lora_map:
+        adapters = sorted(set(lora_map.values()))
+        parts.append(f"LoRA adapters=[{', '.join(adapters)}]")
+    parser_image = record.get("parser_image")
+    if parser_image:
+        parts.append(f"parser=`{parser_image}`")
+    return " · ".join(parts)
+
+
 def _render(
     labels: List[str],
     sections: Dict[str, Dict[str, Dict[str, Any]]],
     tokens_by_label: Dict[str, Dict[str, Any]],
+    records: Dict[str, Optional[Dict[str, Any]]],
     metrics: List[str],
     title: str,
 ) -> str:
     # sections: section_name -> label -> _section_for_label() result
     lines: List[str] = [f"# {title}", ""]
+    if records:
+        lines.append("**Backends:**")
+        lines.append("")
+        for label in labels:
+            lines.append(f"- `{label}` — {_backend_description(records.get(label))}")
+        lines.append("")
     section_names = ["overall"] + [s for s in sorted(sections) if s != "overall"]
 
     for section_name in section_names:
@@ -174,10 +199,15 @@ def main() -> None:
 
     sections: Dict[str, Dict[str, Dict[str, Any]]] = {}
     tokens_by_label: Dict[str, Dict[str, Any]] = {}
+    records: Dict[str, Optional[Dict[str, Any]]] = {}
     for label, run_dir in args.run:
         rows = _load_jsonl(run_dir / "per_document.jsonl")
         if not rows:
             raise SystemExit(f"No rows in {run_dir/'per_document.jsonl'}")
+        rec_path = run_dir / "run_record.json"
+        records[label] = (
+            json.loads(rec_path.read_text(encoding="utf-8")) if rec_path.exists() else None
+        )
         corpora = sorted({r["corpus"] for r in rows})
         # Overall + per-corpus.
         sections.setdefault("overall", {})[label] = _section_for_label(
@@ -190,7 +220,7 @@ def main() -> None:
             )
         tokens_by_label[label] = {"overall": _aggregate_tokens(rows, n_res, cl)}
 
-    md = _render(labels, sections, tokens_by_label, metrics, args.title)
+    md = _render(labels, sections, tokens_by_label, records, metrics, args.title)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(md, encoding="utf-8")
     print(f"Wrote {args.out}", flush=True)

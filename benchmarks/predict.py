@@ -526,6 +526,21 @@ def main() -> None:
         client.model if isinstance(client, OpenAIClient)
         else (client.backends[0].model or client.backends[0].deployment)
     )
+    step_lora_map = (
+        client.step_lora_map if isinstance(client, AoaiPool) and client.step_lora_map
+        else None
+    )
+    llm_info: Dict[str, Any] = {
+        "model": llm_model,
+        "temperature": cfg["llm"]["temperature"],
+        "max_tokens": cfg["llm"]["max_tokens"],
+        "workers": cfg["llm"].get("workers"),
+        "concurrency": cfg["llm"].get("concurrency"),
+        "routing": cfg["llm"].get("routing") or os.getenv("AOAI_POOL_ROUTING", "round_robin"),
+        "doc_concurrency": cfg.get("llm_doc_concurrency", cfg.get("doc_concurrency", 4)),
+    }
+    if step_lora_map:
+        llm_info["step_lora_map"] = step_lora_map
     run_record = {
         "mode": args.mode,
         "config_path": str(args.config),
@@ -536,15 +551,7 @@ def main() -> None:
         "n_errors": len(errors),
         "elapsed_s": round(elapsed, 1),
         "git_commit": os.environ.get("GITHUB_SHA", _git_sha()),
-        "llm": {
-            "model": llm_model,
-            "temperature": cfg["llm"]["temperature"],
-            "max_tokens": cfg["llm"]["max_tokens"],
-            "workers": cfg["llm"].get("workers"),
-            "concurrency": cfg["llm"].get("concurrency"),
-            "routing": cfg["llm"].get("routing") or os.getenv("AOAI_POOL_ROUTING", "round_robin"),
-            "doc_concurrency": cfg.get("llm_doc_concurrency", cfg.get("doc_concurrency", 4)),
-        },
+        "llm": llm_info,
         "tokens_total": tokens_total_out,
         "tokens_by_stage": tokens_by_stage,
         "tokens_by_metric_group": tokens_by_group,

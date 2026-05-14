@@ -199,12 +199,17 @@ jobs:
             --pool-path runtime/aoai_pool.json
 
       - name: Score (side-by-side)
+        env:
+          # Override Azure's pool-deployment alias ("chat") in the legend.
+          # The AOAI_POOL_JSON secret aliases the deployment, so the
+          # underlying model name has to be supplied explicitly here.
+          AZURE_MODEL_LABEL: ${{ vars.AZURE_MODEL_LABEL || 'gpt-4o-mini' }}
         run: |
           uv run python -m benchmarks.score_multi \
             --config benchmarks/bench.yaml \
-            --run base=$RUN_DIR/qwen_base \
-            --run lora=$RUN_DIR/qwen_lora \
-            --run azure=$RUN_DIR/azure \
+            --run "Qwen-7B base=$RUN_DIR/qwen_base" \
+            --run "Qwen-7B + v1 LoRA pack=$RUN_DIR/qwen_lora" \
+            --run "Azure $AZURE_MODEL_LABEL=$RUN_DIR/azure" \
             --out $RUN_DIR/report.md \
             --title "bench-all ${{ github.run_id }}"
           echo "===REPORT==="
