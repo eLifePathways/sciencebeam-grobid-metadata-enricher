@@ -109,9 +109,11 @@ for zone in $ZONE_LIST; do
   # "enough resources", QUOTA_EXCEEDED, "limit exceeded", references to a
   # per-region quota metric like preemptible_nvidia_a100_gpus). Normalize
   # whitespace then case-insensitive grep.
+  # "operation was canceled" appears when GCP preempts a spot create mid-
+  # staging — same intent, try a different zone instead of bailing out.
   norm_err="$(echo "$last_err" | tr -s '\n\t ' ' ')"
   if echo "$norm_err" | grep -qiE \
-      "(stockout|resource_exhausted|resource_availability|enough resources|quota_exceeded|limit exceeded|preemptible_nvidia|nvidia_a100_gpus|does not exist in zone|machine type with name)"; then
+      "(stockout|resource_exhausted|resource_availability|enough resources|quota_exceeded|limit exceeded|preemptible_nvidia|nvidia_a100_gpus|does not exist in zone|machine type with name|operation was canceled)"; then
     echo "[create-vm] capacity/quota/availability issue in $zone; trying next zone"
     continue
   fi
