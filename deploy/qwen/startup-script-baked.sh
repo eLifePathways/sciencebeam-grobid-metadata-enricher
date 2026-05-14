@@ -40,12 +40,15 @@ modules=()
 
 if [ -n "$LORA_PACK" ]; then
   # multi-LoRA: each line is "<name>\t<gcs-uri>"
+  # vLLM only needs root adapter_config.json + adapter_model.safetensors +
+  # tokenizer; training checkpoint-<step>/ dirs add ~600 MiB per adapter
+  # and aren't read at serve time, so we exclude them via -x regex.
   count=0
   while IFS=$'\t' read -r name uri; do
     [ -z "$name" ] && continue
     mkdir -p "/var/lora/$name"
     echo "[startup] syncing $name from $uri"
-    gsutil -m rsync -d -r "$uri" "/var/lora/$name/"
+    gsutil -m rsync -d -r -x '^checkpoint-[0-9]+/' "$uri" "/var/lora/$name/"
     modules+=("$name=/var/lora/$name")
     count=$((count + 1))
   done <<< "$LORA_PACK"
