@@ -130,10 +130,13 @@ def train_one(
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss", greater_is_better=False,
     )
-    # Qwen3.5 ships a VLM processor; SFTTrainer's <EOS_TOKEN> placeholder
-    # resolution doesn't traverse into processor.tokenizer. Pass the inner
-    # text tokenizer.
+    # Qwen3.5 ships a VLM processor; pass the inner text tokenizer to
+    # SFTTrainer so trl's tokenizer-only paths work.
     text_tok = getattr(tok, "tokenizer", tok)
+    # trl >= 2026.5 ships SFTConfig with a literal '<EOS_TOKEN>' sentinel
+    # default that the trainer no longer resolves; assigning the actual
+    # tokenizer EOS up front sidesteps the in-vocab check.
+    cfg.eos_token = text_tok.eos_token
     trainer = SFTTrainer(
         model=model, args=cfg, train_dataset=train_ds, eval_dataset=val_ds,
         processing_class=text_tok,
