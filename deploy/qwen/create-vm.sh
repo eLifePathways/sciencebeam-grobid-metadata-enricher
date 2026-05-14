@@ -97,6 +97,12 @@ esac
 # implicitly forces this; ON_DEMAND defaults to MIGRATE, which gcloud rejects
 # for any GPU-bearing instance ("onHostMaintenance must be TERMINATE").
 provisioning_args+=(--maintenance-policy=TERMINATE)
+# Default compute SA only gets devstorage.read_only, which lets the startup
+# script rsync the LoRA pack FROM GCS but blocks the post-success cache push
+# back UP with GcsApiError. cloud-platform widens the OAuth scopes to cover
+# storage writes (still gated by the SA's IAM perms, which the qwen-bench
+# project pre-grants to the default compute SA).
+provisioning_args+=(--scopes=https://www.googleapis.com/auth/cloud-platform)
 
 last_err=""
 for zone in $ZONE_LIST; do
