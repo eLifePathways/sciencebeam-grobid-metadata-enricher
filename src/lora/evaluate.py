@@ -145,7 +145,7 @@ def _biorxiv_doi_override(task: str, corpus: str, rid: str, preds: list) -> list
     return preds
 
 
-def evaluate_one(
+def _evaluate_one_vllm(
     *,
     task: str,
     device: int,
@@ -155,13 +155,155 @@ def evaluate_one(
     maxlen: int,
     max_new: int,
 ) -> None:
+    # Base model from the adapter config so vLLM downloads/loads it consistently.
+    cfg = json.loads((adapter_path / "adapter_config.json").read_text())
+    base_model = cfg["base_model_name_or_path"]
+    if not base_model:
+        sys.exit(f"FATAL|{task}|adapter_config.json has no base_model_name_or_path")
+
+    t0 = time.time()
+    _heartbeat(task, device, "loading_vllm", base=base_model)
+    # vLLM 0.11.0 reads PreTrainedTokenizer.all_special_tokens_extended at LLM
+    # construction; transformers 5.x dropped that attribute on slow tokenizers.
+    from transformers import PreTrainedTokenizerBase
+    if not hasattr(PreTrainedTokenizerBase, "all_special_tokens_extended"):
+        PreTrainedTokenizerBase.all_special_tokens_extended = property(
+            lambda self: self.all_special_tokens
+        )
+    from vllm import LLM, SamplingParams
+    from vllm.lora.request import LoRARequest
+    llm = LLM(
+        model=base_model,
+        dtype="bfloat16",
+        max_model_len=maxlen,
+        gpu_memory_utilization=0.80,
+        enforce_eager=False,
+        enable_lora=True,
+        max_lora_rank=64,  # >= adapter rank (16)
+        max_loras=1,
+        seed=42,
+    )
+    tok = llm.get_tokenizer()
+    lora_req = LoRARequest("eval_adapter", 1, str(adapter_path))
+    _heartbeat(task, device, "loaded", seconds=round(time.time() - t0, 1))
+
+    docs = [json.loads(line) for line in test_path.open()]
+    sys_prompt = docs[0]["messages"][0]["content"] if docs else ""
+    _heartbeat(task, device, "starting_eval", n_docs=len(docs), sys_prompt_len=len(sys_prompt))
+
+    prompts: List[str] = []
+    for doc in docs:
+        msgs = [{"role": "system", "content": sys_prompt},
+                {"role": "user", "content": doc["messages"][1]["content"][:12000]}]
+        prompts.append(tok.apply_chat_template(
+            msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False,
+        ))
+
+    sp = SamplingParams(
+        temperature=0.0, max_tokens=max_new, seed=42, skip_special_tokens=True,
+    )
+    t1 = time.time()
+    outs = llm.generate(prompts, sampling_params=sp, lora_request=lora_req, use_tqdm=False)
+    _heartbeat(task, device, "generated", seconds=round(time.time() - t1, 1), n=len(outs))
+
+    rows = []
+    parsefail = 0
+    for n, (doc, out) in enumerate(zip(docs, outs), 1):
+        rid, corpus, _, gold_dict = _doc_view(doc)
+        msg = out.outputs[0].text
+        m = re.search(r"\{.*?\}\s*$|\{.*?\}(?=\s*$)|\{.*\}", msg, re.S)
+        if m:
+            msg = m.group(0)
+        parsed = _ej(msg)
+        if parsed is None:
+            parsefail += 1
+            preds: list = []
+        else:
+            preds = _extract_pred(parsed, task)
+        preds = _biorxiv_doi_override(task, corpus, rid, preds)
+        gold_value = gold_dict.get(OUT_KEY[task])
+        gold_list = [gold_value] if isinstance(gold_value, str) else (gold_value or [])
+        pr, rc, f1 = _strict_prf(gold_list, preds)
+        pr_fz, rc_fz, f1_fz = _fuzzy_prf(gold_list, preds)
+        rows.append({
+            "id": rid, "corpus": corpus,
+            "n_gold": len(gold_list), "n_pred": len(preds),
+            "prec": round(pr, 3), "rec": round(rc, 3), "f1": round(f1, 3),
+            "prec_fz": round(pr_fz, 3), "rec_fz": round(rc_fz, 3), "f1_fz": round(f1_fz, 3),
+            "raw0": msg[:400],
+        })
+        if n <= 5 or n % 50 == 0:
+            _heartbeat(task, device, "doc", n=n, rid=rid, f1=rows[-1]["f1"], n_pred=rows[-1]["n_pred"])
+
+    def _avg(rs: list, k: str):
+        vs = [r[k] for r in rs]
+        return round(sum(vs) / len(vs), 4) if vs else None
+
+    by_corpus: dict[str, list] = {}
+    for r in rows:
+        by_corpus.setdefault(r["corpus"], []).append(r)
+
+    overall = {
+        "mean_f1": _avg(rows, "f1"),
+        "mean_prec": _avg(rows, "prec"),
+        "mean_rec": _avg(rows, "rec"),
+        "mean_f1_fz": _avg(rows, "f1_fz"),
+        "mean_prec_fz": _avg(rows, "prec_fz"),
+        "mean_rec_fz": _avg(rows, "rec_fz"),
+        "parsefail": parsefail,
+        "n": len(rows),
+    }
+    per_corpus = {
+        c: {
+            "n": len(rs),
+            "mean_f1": _avg(rs, "f1"),
+            "mean_prec": _avg(rs, "prec"),
+            "mean_rec": _avg(rs, "rec"),
+            "mean_f1_fz": _avg(rs, "f1_fz"),
+            "mean_prec_fz": _avg(rs, "prec_fz"),
+            "mean_rec_fz": _avg(rs, "rec_fz"),
+        }
+        for c, rs in sorted(by_corpus.items())
+    }
+    _heartbeat(task, device, "done", **overall)
+    for c, s in per_corpus.items():
+        _heartbeat(task, device, "corpus", corpus=c, **s)
+
+    results_path.parent.mkdir(parents=True, exist_ok=True)
+    with results_path.open("w") as f:
+        json.dump({"task": task, "overall": overall, "per_corpus": per_corpus, "rows": rows},
+                  f, indent=1)
+    _heartbeat(task, device, "wrote", res=str(results_path))
+
+
+def evaluate_one(
+    *,
+    task: str,
+    device: int,
+    adapter_path: Path,
+    test_path: Path,
+    results_path: Path,
+    maxlen: int,
+    max_new: int,
+    engine: str = "hf",
+) -> None:
     os.environ["CUDA_VISIBLE_DEVICES"] = str(device)
 
     for p in (adapter_path, test_path):
         if not p.exists():
             sys.exit(f"FATAL|{task}|missing {p}")
 
-    _heartbeat(task, device, "boot", adapter=str(adapter_path), test=str(test_path))
+    _heartbeat(task, device, "boot", adapter=str(adapter_path), test=str(test_path), engine=engine)
+
+    if engine == "vllm":
+        _evaluate_one_vllm(
+            task=task, device=device, adapter_path=adapter_path,
+            test_path=test_path, results_path=results_path,
+            maxlen=maxlen, max_new=max_new,
+        )
+        return
+    if engine != "hf":
+        sys.exit(f"FATAL|{task}|unknown engine: {engine}")
 
     import torch
     from unsloth import FastLanguageModel
@@ -342,6 +484,7 @@ def launch_all(
     maxlen: int,
     max_new: int,
     shards_per_task: int = 1,
+    engine: str = "hf",
 ) -> None:
     if shards_per_task < 1:
         raise ValueError(f"shards_per_task must be >= 1, got {shards_per_task}")
@@ -379,6 +522,7 @@ def launch_all(
                 "--results", str(rp),
                 "--maxlen", str(maxlen),
                 "--max-new", str(max_new),
+                "--engine", engine,
             ]
             log_name = f"{task}_eval.log" if shards_per_task == 1 else f"{task}_shard{s}.log"
             log = log_dir / log_name
@@ -424,6 +568,7 @@ def main() -> None:
     one.add_argument("--results", required=True, type=Path)
     one.add_argument("--maxlen", type=int, default=8192)
     one.add_argument("--max-new", type=int, default=1500)
+    one.add_argument("--engine", default="hf", choices=("hf", "vllm"))
 
     allp = sub.add_parser("all", help="launch eval for all tasks across GPUs 0..N-1")
     allp.add_argument("--tasks", nargs="+", default=list(TASKS))
@@ -439,6 +584,9 @@ def main() -> None:
                       help="Split each task's val jsonl across N GPUs and merge results. "
                            "Total GPU workers = (non-skipped tasks) × N; caller is responsible "
                            "for not exceeding the box's GPU count.")
+    allp.add_argument("--engine", default="hf", choices=("hf", "vllm"),
+                      help="hf = transformers + Unsloth (single-stream); "
+                           "vllm = continuous-batched (much faster, but ~30-60s extra cold-start).")
 
     args = ap.parse_args()
 
@@ -447,6 +595,7 @@ def main() -> None:
             task=args.task, device=args.device,
             adapter_path=args.adapter, test_path=args.test,
             results_path=args.results, maxlen=args.maxlen, max_new=args.max_new,
+            engine=args.engine,
         )
         return
 
@@ -455,7 +604,7 @@ def main() -> None:
             tasks=args.tasks, data_dir=args.data_dir,
             adapter_dir=args.adapter_dir, out_dir=args.out_dir, log_dir=args.log_dir,
             split=args.split, maxlen=args.maxlen, max_new=args.max_new,
-            shards_per_task=args.shards_per_task,
+            shards_per_task=args.shards_per_task, engine=args.engine,
         )
 
 
