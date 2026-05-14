@@ -275,7 +275,10 @@ class AoaiPool:
                         f"(step={step_name or 'llm'}, deployment={backend.deployment}, "
                         f"endpoint={backend.endpoint}): {body}"
                     )
-                    if '"content_filter"' in body:
+                    # Provider content-filter markers we recognise across vendors:
+                    #   Azure / OpenAI:    "code":"content_filter"
+                    #   Alibaba (via OR):  "code":"data_inspection_failed"
+                    if '"content_filter"' in body or '"data_inspection_failed"' in body:
                         raise ContentFilterError(msg) from error
                     raise LLMCallError(msg) from error
                 except Exception as error:  # pylint: disable=broad-except
