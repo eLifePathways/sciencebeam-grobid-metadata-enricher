@@ -24,6 +24,23 @@ meta() {
     "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1" || true
 }
 
+# vLLM caches its torch.compile artifacts (~150s of work for Qwen3.5-9B:
+# Dynamo bytecode transform + AOT compile + first warmup) inside the
+# container at /root/.cache/vllm/torch_compile_cache. Empty on every
+# fresh VM, so it recompiles from scratch.
+#
+# Mount /var/vllm-compile-cache from the host -> the cache path in the
+# container. If `vllm-cache-gcs` metadata is set, gsutil rsync it in
+# before docker so a populated cache from a previous bake VM cuts cold
+# start by ~2.5 minutes.
+mkdir -p /var/vllm-compile-cache
+VLLM_CACHE_GCS="$(meta vllm-cache-gcs)"
+if [ -n "$VLLM_CACHE_GCS" ]; then
+  echo "[startup] rsyncing vLLM compile cache from $VLLM_CACHE_GCS"
+  gsutil -m rsync -r "$VLLM_CACHE_GCS" /var/vllm-compile-cache/ || \
+    echo "[startup] cache rsync failed; vLLM will recompile from scratch"
+fi
+
 # Base model can be overridden by instance metadata `qwen-model`. The baked
 # image only pre-caches Qwen2.5-7B-Instruct, so non-default models pay a
 # one-time HF download (~18GB for the 9B class) at first boot.
@@ -105,6 +122,7 @@ for i in 0 1 2 3 4 5 6 7; do
     --shm-size=8g \
     -v /var/hf-cache:/root/.cache/huggingface \
     -v /var/lora:/var/lora:ro \
+    -v /var/vllm-compile-cache:/root/.cache/vllm/torch_compile_cache \
     -p "${port}:8000" \
     "$IMAGE" \
     --model "$MODEL" \

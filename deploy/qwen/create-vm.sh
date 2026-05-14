@@ -58,6 +58,9 @@ fi
 if [ -n "${QWEN_MODEL:-}" ]; then
   extra_metadata+=("qwen-model=${QWEN_MODEL}")
 fi
+if [ -n "${VLLM_CACHE_GCS:-}" ]; then
+  extra_metadata+=("vllm-cache-gcs=${VLLM_CACHE_GCS}")
+fi
 metadata_arg=""
 if [ "${#extra_metadata[@]}" -gt 0 ]; then
   metadata_arg="--metadata=$(IFS=,; echo "${extra_metadata[*]}")"
