@@ -1,9 +1,12 @@
 name: bench-all
 
-# One-shot benchmark comparing Grobid, base Qwen, Qwen+LoRA pack and Azure
-# side-by-side on the same documents. Provisions a single Qwen 8xA100 spot
-# VM (preloaded with the v1 LoRA pack), runs predict three times against
-# different backends, then produces a unified report via score_multi.
+# One-shot benchmark comparing Grobid, Qwen base, Qwen+LoRA pack and Azure
+# side-by-side on the same documents.
+#
+# Order is cost-tuned: Azure runs first (no VM yet), warming the Grobid
+# parse cache for all three backends; the 8xA100 spot VM is only
+# provisioned after Azure finishes so its billed lifetime covers just the
+# vLLM warm + the two Qwen predicts.
 
 on:
   workflow_dispatch:
@@ -34,6 +37,10 @@ jobs:
       AOAI_POOL_JSON: ${{ secrets.AOAI_POOL_JSON }}
       VM_NAME: bench-all-${{ github.run_id }}
       RUN_DIR: benchmarks/runs/${{ github.run_id }}
+      # Qwen3-family thinking mode burns max_tokens on chain-of-thought
+      # before the JSON answer; disable via the chat template kwarg. AOAI
+      # ignores the field, so the env is safe to leave set for all steps.
+      QWEN_TEMPLATE_KWARGS: '{"enable_thinking": false}'
 
     services:
       grobid:
@@ -76,20 +83,49 @@ jobs:
           python3 -c "import json; json.load(open('runtime/aoai_pool.json'))" \
             || { echo "::error::AOAI_POOL_JSON secret is not valid JSON"; exit 1; }
 
-      - name: Build LoRA pack (v1 preset)
+      - name: Build LoRA pack (qwen35 preset)
         id: pack
         env:
           BUCKET: gs://${{ vars.GCP_LORA_BUCKET }}
         run: |
           set -euo pipefail
-          names=(body_sections_v1 figure_captions_v1 header_metadata_v1 identifiers_v1 keywords_v1 references_v1 table_captions_v1)
+          names=(body_sections_qwen35 figure_captions_qwen35 header_metadata_qwen35 identifiers_qwen35 keywords_qwen35 references_qwen35 table_captions_qwen35)
           : > /tmp/lora_pack.tsv
           for n in "${names[@]}"; do
             printf "%s\t%s/lora/%s/\n" "$n" "$BUCKET" "$n" >> /tmp/lora_pack.tsv
           done
           cat > /tmp/step_lora_map.json <<'EOF'
-          {"HEADER_METADATA":"header_metadata_v1","TEI_METADATA":"header_metadata_v1","TEI_VALIDATED":"header_metadata_v1","CONTENT_BODY_SECTIONS":"body_sections_v1","CONTENT_REFERENCES":"references_v1","CONTENT_FIGURE_CAPTIONS":"figure_captions_v1","CONTENT_TABLE_CAPTIONS":"table_captions_v1","KEYWORD_TRANSLATE":"keywords_v1","KEYWORD_SELECT":"keywords_v1","KEYWORD_EXTRACT":"keywords_v1","KEYWORD_INFER":"keywords_v1","IDENTIFIER_SELECT":"identifiers_v1"}
+          {"HEADER_METADATA":"header_metadata_qwen35","TEI_METADATA":"header_metadata_qwen35","TEI_VALIDATED":"header_metadata_qwen35","CONTENT_BODY_SECTIONS":"body_sections_qwen35","CONTENT_REFERENCES":"references_qwen35","CONTENT_FIGURE_CAPTIONS":"figure_captions_qwen35","CONTENT_TABLE_CAPTIONS":"table_captions_qwen35","KEYWORD_TRANSLATE":"keywords_qwen35","KEYWORD_SELECT":"keywords_qwen35","KEYWORD_EXTRACT":"keywords_qwen35","KEYWORD_INFER":"keywords_qwen35","IDENTIFIER_SELECT":"identifiers_qwen35"}
           EOF
+
+      # Predict against Azure first while the Qwen VM doesn't exist yet.
+      # The Grobid+pdfalto parse done here is hardlinked into the two
+      # Qwen run dirs so they skip re-parsing.
+      - name: Predict — Azure
+        env:
+          PDFALTO_BIN: /usr/local/bin/pdfalto
+        run: |
+          uv run python -m benchmarks.predict \
+            --config benchmarks/bench.yaml \
+            --mode   ${{ inputs.mode || 'smoke' }} \
+            --out    "$RUN_DIR/azure" \
+            --pool-path runtime/aoai_pool.json
+
+      - name: Share Grobid/pdfalto artefacts to Qwen run dirs
+        run: |
+          for sub in qwen_base qwen_lora; do
+            for corpus_dir in "$RUN_DIR/azure"/*/; do
+              corpus=$(basename "$corpus_dir")
+              for kind in tei alto; do
+                src="$corpus_dir/$kind"
+                if [ -d "$src" ]; then
+                  dst="$RUN_DIR/$sub/$corpus/$kind"
+                  mkdir -p "$dst"
+                  cp -al "$src"/. "$dst"/ 2>/dev/null || cp -r "$src"/. "$dst"/
+                fi
+              done
+            done
+          done
 
       - name: Provision Qwen spot cluster
         id: provision
@@ -98,6 +134,7 @@ jobs:
           NAME: ${{ env.VM_NAME }}
           LORA_PACK_FILE: /tmp/lora_pack.tsv
           LORA_MAX_RANK: '16'
+          QWEN_MODEL: 'Qwen/Qwen3.5-9B'
         run: |
           out=$(bash deploy/qwen/create-vm.sh)
           echo "$out"
@@ -110,10 +147,13 @@ jobs:
       - name: Wait for 8 vLLM replicas
         env:
           IP: ${{ steps.provision.outputs.ip }}
-          MODEL_NAME: 'Qwen/Qwen2.5-7B-Instruct'
+          MODEL_NAME: 'Qwen/Qwen3.5-9B'
         run: |
           payload=$(printf '{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' "$MODEL_NAME")
-          deadline=$(( $(date +%s) + 900 ))   # 15 min: multi-LoRA preload adds ~3 min vs single
+          # Qwen3.5-9B is NOT in the baked HF cache (image only pre-fetches
+          # Qwen2.5-7B), so first-run cold pulls ~18GB and adds ~5-7 min on
+          # top of the multi-LoRA preload. Bump to 20 min.
+          deadline=$(( $(date +%s) + 1200 ))
           while [ "$(date +%s)" -lt "$deadline" ]; do
             ready=0
             for i in 0 1 2 3 4 5 6 7; do
@@ -127,7 +167,7 @@ jobs:
             if [ "$ready" -eq 8 ]; then exit 0; fi
             sleep 15
           done
-          echo "::error::only $ready/8 vLLM replicas ready after 15 min"
+          echo "::error::only $ready/8 vLLM replicas ready after 20 min"
           exit 1
 
       - name: Build Qwen pool JSON
@@ -141,7 +181,7 @@ jobs:
           print(json.dumps([
               {"id": f"qwen-{i}",
                "endpoint": f"http://{ip}:{8000+i}",
-               "deployment": "Qwen/Qwen2.5-7B-Instruct",
+               "deployment": "Qwen/Qwen3.5-9B",
                "apiKey": "local",
                "apiVersion": "unused",
                "kind": "openai"}
@@ -149,9 +189,10 @@ jobs:
           ], indent=2))
           PY
 
-      - name: Predict — base Qwen
+      - name: Predict — Qwen base
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
+          LLM_CHAT_TEMPLATE_KWARGS_JSON: ${{ env.QWEN_TEMPLATE_KWARGS }}
         run: |
           uv run python -m benchmarks.predict \
             --config benchmarks/bench.yaml \
@@ -159,27 +200,10 @@ jobs:
             --out    "$RUN_DIR/qwen_base" \
             --pool-path runtime/qwen_pool.json
 
-      - name: Share Grobid/pdfalto artefacts across remaining runs
-        run: |
-          # Predict reuses existing tei/alto files when present, so hardlinking
-          # them into the other sub-run dirs skips re-extraction (saves ~5-8 min).
-          for sub in qwen_lora azure; do
-            for corpus_dir in "$RUN_DIR/qwen_base"/*/; do
-              corpus=$(basename "$corpus_dir")
-              for kind in tei alto; do
-                src="$corpus_dir/$kind"
-                if [ -d "$src" ]; then
-                  dst="$RUN_DIR/$sub/$corpus/$kind"
-                  mkdir -p "$dst"
-                  cp -al "$src"/. "$dst"/ 2>/dev/null || cp -r "$src"/. "$dst"/
-                fi
-              done
-            done
-          done
-
       - name: Predict — Qwen + LoRA pack
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
+          LLM_CHAT_TEMPLATE_KWARGS_JSON: ${{ env.QWEN_TEMPLATE_KWARGS }}
         run: |
           STEP_LORA_MAP_JSON="$(cat /tmp/step_lora_map.json)" \
           uv run python -m benchmarks.predict \
@@ -188,27 +212,24 @@ jobs:
             --out    "$RUN_DIR/qwen_lora" \
             --pool-path runtime/qwen_pool.json
 
-      - name: Predict — Azure
+      - name: Tear down Qwen spot cluster
+        if: always() && steps.provision.outputs.ip
         env:
-          PDFALTO_BIN: /usr/local/bin/pdfalto
+          PROJECT: ${{ vars.GCP_PROJECT }}
         run: |
-          uv run python -m benchmarks.predict \
-            --config benchmarks/bench.yaml \
-            --mode   ${{ inputs.mode || 'smoke' }} \
-            --out    "$RUN_DIR/azure" \
-            --pool-path runtime/aoai_pool.json
+          gcloud compute instances delete ${{ env.VM_NAME }} \
+            --project="$PROJECT" \
+            --zone="${{ steps.provision.outputs.zone }}" \
+            --quiet || true
 
       - name: Score (side-by-side)
         env:
-          # Override Azure's pool-deployment alias ("chat") in the legend.
-          # The AOAI_POOL_JSON secret aliases the deployment, so the
-          # underlying model name has to be supplied explicitly here.
           AZURE_MODEL_LABEL: ${{ vars.AZURE_MODEL_LABEL || 'gpt-4o-mini' }}
         run: |
           uv run python -m benchmarks.score_multi \
             --config benchmarks/bench.yaml \
-            --run "Qwen-7B base=$RUN_DIR/qwen_base" \
-            --run "Qwen-7B + v1 LoRA pack=$RUN_DIR/qwen_lora" \
+            --run "Qwen3.5-9B base=$RUN_DIR/qwen_base" \
+            --run "Qwen3.5-9B + qwen35 LoRA pack=$RUN_DIR/qwen_lora" \
             --run "Azure $AZURE_MODEL_LABEL=$RUN_DIR/azure" \
             --out $RUN_DIR/report.md \
             --title "bench-all ${{ github.run_id }}"
@@ -234,13 +255,3 @@ jobs:
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: cml comment create $RUN_DIR/report.md
-
-      - name: Tear down Qwen spot cluster
-        if: always() && steps.provision.outputs.ip
-        env:
-          PROJECT: ${{ vars.GCP_PROJECT }}
-        run: |
-          gcloud compute instances delete ${{ env.VM_NAME }} \
-            --project="$PROJECT" \
-            --zone="${{ steps.provision.outputs.zone }}" \
-            --quiet || true

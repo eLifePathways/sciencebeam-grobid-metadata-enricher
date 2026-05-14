@@ -100,6 +100,7 @@ def _build_chat_request(
     temperature: float,
     max_tokens: int,
     model_override: Optional[str] = None,
+    chat_template_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
     """Build (url, headers, payload) for one chat-completions call.
 
@@ -125,6 +126,8 @@ def _build_chat_request(
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if chat_template_kwargs:
+            payload["chat_template_kwargs"] = chat_template_kwargs
         return url, headers, payload
     url = (
         backend.endpoint.rstrip("/")
@@ -182,6 +185,15 @@ class AoaiPool:
         # while the 8-backend round-robin / stable hashing stays unchanged.
         raw_map = os.getenv("STEP_LORA_MAP_JSON", "").strip()
         self.step_lora_map: Dict[str, str] = json.loads(raw_map) if raw_map else {}
+        # Optional: per-request `chat_template_kwargs` for OpenAI-compat
+        # backends. Used to set Qwen3-family `enable_thinking=false` so the
+        # model doesn't burn max_tokens on chain-of-thought before the
+        # actual JSON answer. AOAI backends ignore this — the field is
+        # only added to the OpenAI-compat payload in `_build_chat_request`.
+        raw_kwargs = os.getenv("LLM_CHAT_TEMPLATE_KWARGS_JSON", "").strip()
+        self.chat_template_kwargs: Dict[str, Any] = (
+            json.loads(raw_kwargs) if raw_kwargs else {}
+        )
         self._index = 0
         self._lock = threading.Lock()
 
@@ -228,6 +240,7 @@ class AoaiPool:
                     backend, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     model_override=model_override,
+                    chat_template_kwargs=self.chat_template_kwargs or None,
                 )
                 request = urllib.request.Request(
                     url,

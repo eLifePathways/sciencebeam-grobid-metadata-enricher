@@ -17,13 +17,18 @@
 
 set -euo pipefail
 
-MODEL="${QWEN_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 IMAGE="vllm/vllm-openai:latest"
 
 meta() {
   curl -sf -H 'Metadata-Flavor: Google' \
     "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1" || true
 }
+
+# Base model can be overridden by instance metadata `qwen-model`. The baked
+# image only pre-caches Qwen2.5-7B-Instruct, so non-default models pay a
+# one-time HF download (~18GB for the 9B class) at first boot.
+MODEL_FROM_META="$(meta qwen-model)"
+MODEL="${MODEL_FROM_META:-${QWEN_MODEL:-Qwen/Qwen2.5-7B-Instruct}}"
 
 LORA_GCS_URI="$(meta lora-gcs-uri)"
 LORA_NAME="$(meta lora-name)"; LORA_NAME="${LORA_NAME:-v2}"
