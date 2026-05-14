@@ -16,11 +16,11 @@ ADAPTER_FILES = (
 
 
 def _push_one(adapter_dir: Path, repo_id: str, subfolder: str, commit_message: str) -> None:
-    from huggingface_hub import HfApi
+    from huggingface_hub import HfApi, get_token
 
-    token = os.environ.get("HF_TOKEN")
+    token = os.environ.get("HF_TOKEN") or get_token()
     if not token:
-        raise RuntimeError("HF_TOKEN env var required to push to HF")
+        raise RuntimeError("HF_TOKEN env var or ~/.cache/huggingface/token required to push to HF")
 
     required = adapter_dir / "adapter_model.safetensors"
     if not required.exists():
