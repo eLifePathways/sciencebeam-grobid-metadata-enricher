@@ -226,6 +226,11 @@ jobs:
           LORA_MAX_RANK: '16'
           QWEN_MODEL: 'Qwen/Qwen3-8B'
           PROVISIONING_MODEL: ${{ inputs.provisioning || 'SPOT' }}
+          # On-demand A100 quota is currently approved only in us-central1
+          # (8 GPUs / 96 A2-CPUs). For ON_DEMAND runs we constrain ZONE_LIST
+          # so create-vm.sh doesn't burn time on regions without the quota.
+          # SPOT runs use the default region-interleaved list.
+          ZONE_LIST: ${{ inputs.provisioning == 'ON_DEMAND' && 'us-central1-a us-central1-b us-central1-c us-central1-f' || '' }}
           # Pre-warmed torch.compile + AOT cache pushed from a prior bake VM.
           # The startup script gsutil-rsyncs this into /var/vllm-compile-cache
           # so each vLLM container skips ~150s of compile + first-pass warmup.
@@ -268,6 +273,7 @@ jobs:
           LORA_MAX_RANK: '16'
           QWEN_MODEL: 'Qwen/Qwen3-8B'
           PROVISIONING_MODEL: ${{ inputs.provisioning || 'SPOT' }}
+          ZONE_LIST: ${{ inputs.provisioning == 'ON_DEMAND' && 'us-central1-a us-central1-b us-central1-c us-central1-f' || '' }}
           POOL_PATH: runtime/qwen_pool.json
           BENCH_CONFIG: benchmarks/bench.yaml
           BENCH_MODE: ${{ inputs.mode || 'smoke' }}
