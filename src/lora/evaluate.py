@@ -35,7 +35,9 @@ def _heartbeat(task: str, device: int, msg: str, **kw) -> None:
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9 ]", "", " ".join(str(s).split()).lower()).strip()
+    s = " ".join(str(s).split()).lower()
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    return " ".join(s.split()).strip()
 
 
 def _strict_prf(gold: list, pred: list) -> Tuple[float, float, float]:
