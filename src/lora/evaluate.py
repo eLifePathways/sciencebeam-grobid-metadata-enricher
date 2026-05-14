@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 TASKS = (
     "body_sections", "figure_captions", "header_metadata",
@@ -269,6 +270,67 @@ def evaluate_one(
     _heartbeat(task, device, "wrote", res=str(results_path))
 
 
+def _split_jsonl_shards(src: Path, n_shards: int, shard_dir: Path) -> List[Path]:
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    lines = src.read_text().splitlines(keepends=True)
+    per = math.ceil(len(lines) / n_shards) if lines else 0
+    paths: List[Path] = []
+    for i in range(n_shards):
+        chunk = lines[i * per : (i + 1) * per]
+        if not chunk:
+            continue
+        p = shard_dir / f"shard_{i}.jsonl"
+        p.write_text("".join(chunk))
+        paths.append(p)
+    return paths
+
+
+def _merge_shard_results(task: str, shard_results: List[Path], out_path: Path) -> None:
+    rows: list = []
+    parsefail = 0
+    for p in shard_results:
+        d = json.loads(p.read_text())
+        rows.extend(d.get("rows") or [])
+        parsefail += int((d.get("overall") or {}).get("parsefail") or 0)
+
+    def avg(rs: list, k: str):
+        vs = [r[k] for r in rs if k in r]
+        return round(sum(vs) / len(vs), 4) if vs else None
+
+    by_corpus: Dict[str, list] = {}
+    for r in rows:
+        by_corpus.setdefault(r["corpus"], []).append(r)
+
+    overall = {
+        "mean_f1": avg(rows, "f1"),
+        "mean_prec": avg(rows, "prec"),
+        "mean_rec": avg(rows, "rec"),
+        "mean_f1_fz": avg(rows, "f1_fz"),
+        "mean_prec_fz": avg(rows, "prec_fz"),
+        "mean_rec_fz": avg(rows, "rec_fz"),
+        "parsefail": parsefail,
+        "n": len(rows),
+    }
+    per_corpus = {
+        c: {
+            "n": len(rs),
+            "mean_f1": avg(rs, "f1"),
+            "mean_prec": avg(rs, "prec"),
+            "mean_rec": avg(rs, "rec"),
+            "mean_f1_fz": avg(rs, "f1_fz"),
+            "mean_prec_fz": avg(rs, "prec_fz"),
+            "mean_rec_fz": avg(rs, "rec_fz"),
+        }
+        for c, rs in sorted(by_corpus.items())
+    }
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(
+        {"task": task, "overall": overall, "per_corpus": per_corpus, "rows": rows},
+        ensure_ascii=False, indent=1,
+    ))
+
+
 def launch_all(
     *,
     tasks: List[str],
@@ -279,37 +341,75 @@ def launch_all(
     split: str,
     maxlen: int,
     max_new: int,
+    shards_per_task: int = 1,
 ) -> None:
+    if shards_per_task < 1:
+        raise ValueError(f"shards_per_task must be >= 1, got {shards_per_task}")
+
     log_dir.mkdir(parents=True, exist_ok=True)
     subprocess.run(["pkill", "-9", "-f", "lora.evaluate one"], check=False)
     time.sleep(2)
 
     procs: List[subprocess.Popen] = []
-    for i, task in enumerate(tasks):
+    task_shards: Dict[str, List[Path]] = {}  # task -> list of shard-result paths
+    gpu_idx = 0
+    for task in tasks:
         adapter = adapter_dir / f"{task}_qwen35"
         test_path = data_dir / split / f"task_{task}.jsonl"
-        results = out_dir / f"{task}_qwen35_{split}.json"
-        if results.exists():
-            print(f"SKIP {task} ({results})", flush=True)
+        final_results = out_dir / f"{task}_qwen35_{split}.json"
+        if final_results.exists():
+            print(f"SKIP {task} ({final_results})", flush=True)
             continue
-        cmd = [
-            sys.executable, "-m", "lora.evaluate", "one",
-            "--task", task, "--device", str(i),
-            "--adapter", str(adapter),
-            "--test", str(test_path),
-            "--results", str(results),
-            "--maxlen", str(maxlen),
-            "--max-new", str(max_new),
-        ]
-        log = log_dir / f"{task}_eval.log"
-        p = subprocess.Popen(cmd, stdout=log.open("ab"), stderr=subprocess.STDOUT,
-                             start_new_session=True)
-        procs.append(p)
-        print(f"launched eval {task} on GPU {i} pid={p.pid}", flush=True)
+
+        if shards_per_task == 1:
+            shard_inputs = [test_path]
+            shard_results = [final_results]
+        else:
+            shard_dir = out_dir / "shards" / task
+            shard_inputs = _split_jsonl_shards(test_path, shards_per_task, shard_dir)
+            shard_results = [shard_dir / f"results_shard_{i}.json" for i in range(len(shard_inputs))]
+            task_shards[task] = shard_results
+
+        for s, (sp, rp) in enumerate(zip(shard_inputs, shard_results)):
+            cmd = [
+                sys.executable, "-m", "lora.evaluate", "one",
+                "--task", task, "--device", str(gpu_idx),
+                "--adapter", str(adapter),
+                "--test", str(sp),
+                "--results", str(rp),
+                "--maxlen", str(maxlen),
+                "--max-new", str(max_new),
+            ]
+            log_name = f"{task}_eval.log" if shards_per_task == 1 else f"{task}_shard{s}.log"
+            log = log_dir / log_name
+            p = subprocess.Popen(cmd, stdout=log.open("ab"), stderr=subprocess.STDOUT,
+                                 start_new_session=True)
+            procs.append(p)
+            tag = task if shards_per_task == 1 else f"{task} shard {s}"
+            print(f"launched {tag} on GPU {gpu_idx} pid={p.pid}", flush=True)
+            gpu_idx += 1
 
     time.sleep(5)
     print("--- running ---", flush=True)
     subprocess.run(["pgrep", "-af", "lora.evaluate"], check=False)
+
+    if shards_per_task == 1:
+        return
+
+    print("--- waiting for shards to finish ---", flush=True)
+    for p in procs:
+        rc = p.wait()
+        if rc != 0:
+            print(f"  pid={p.pid} exited rc={rc}", flush=True)
+
+    for task, results_paths in task_shards.items():
+        existing = [rp for rp in results_paths if rp.exists()]
+        final = out_dir / f"{task}_qwen35_{split}.json"
+        if not existing:
+            print(f"WARN {task}: no shard results produced; skipping merge", flush=True)
+            continue
+        _merge_shard_results(task, existing, final)
+        print(f"merged {len(existing)} shards -> {final}", flush=True)
 
 
 def main() -> None:
@@ -335,6 +435,10 @@ def main() -> None:
                       choices=("train", "validation", "test"))
     allp.add_argument("--maxlen", type=int, default=8192)
     allp.add_argument("--max-new", type=int, default=1500)
+    allp.add_argument("--shards-per-task", type=int, default=1,
+                      help="Split each task's val jsonl across N GPUs and merge results. "
+                           "Total GPU workers = (non-skipped tasks) × N; caller is responsible "
+                           "for not exceeding the box's GPU count.")
 
     args = ap.parse_args()
 
@@ -351,6 +455,7 @@ def main() -> None:
             tasks=args.tasks, data_dir=args.data_dir,
             adapter_dir=args.adapter_dir, out_dir=args.out_dir, log_dir=args.log_dir,
             split=args.split, maxlen=args.maxlen, max_new=args.max_new,
+            shards_per_task=args.shards_per_task,
         )
 
 
