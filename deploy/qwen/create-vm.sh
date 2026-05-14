@@ -21,6 +21,16 @@ ZONE_LIST="${ZONE_LIST:-us-east1-b us-central1-c us-west1-b europe-west4-a us-ce
 MACHINE="${MACHINE:-a2-highgpu-8g}"
 ACCEL="${ACCEL:-type=nvidia-tesla-a100,count=8}"
 MAX_RUN_SECONDS="${MAX_RUN_SECONDS:-7200}"
+# SPOT (default) cycles through zones on stockout; ON_DEMAND skips the spot
+# preemption + cancellation modes for one guaranteed-available run (~$15/hr
+# incremental for a2-highgpu-8g).
+PROVISIONING_MODEL="${PROVISIONING_MODEL:-SPOT}"
+# Hard cap per zone attempt; gcloud waits synchronously on operation
+# completion (STAGING -> RUNNING or failure) which can hang for minutes
+# when GCP is churning. 180s lets a legitimate provision land while
+# bounding the bad case so we cycle through ZONE_LIST in worst-case
+# 180s * len(ZONE_LIST) instead of unbounded.
+PER_ZONE_TIMEOUT="${PER_ZONE_TIMEOUT:-180}"
 
 IMAGE_FAMILY="${IMAGE_FAMILY:-qwen-bench}"
 IMAGE_PROJECT="${IMAGE_PROJECT:-$PROJECT}"
@@ -66,19 +76,36 @@ if [ "${#extra_metadata[@]}" -gt 0 ]; then
   metadata_arg="--metadata=$(IFS=,; echo "${extra_metadata[*]}")"
 fi
 
+provisioning_args=()
+case "$PROVISIONING_MODEL" in
+  SPOT)
+    provisioning_args+=(--provisioning-model=SPOT
+                        --instance-termination-action=DELETE
+                        --max-run-duration="${MAX_RUN_SECONDS}s")
+    ;;
+  ON_DEMAND)
+    # No spot flags; gcloud defaults to STANDARD on-demand provisioning.
+    # max-run-duration is incompatible with STANDARD, so drop it too.
+    echo "[create-vm] using ON_DEMAND provisioning (no spot, no preemption)"
+    ;;
+  *)
+    echo "[create-vm] unknown PROVISIONING_MODEL=$PROVISIONING_MODEL" >&2; exit 2
+    ;;
+esac
+
 last_err=""
 for zone in $ZONE_LIST; do
-  echo "[create-vm] trying $zone..."
+  echo "[create-vm] trying $zone (mode=$PROVISIONING_MODEL, timeout=${PER_ZONE_TIMEOUT}s)..."
   # `gcloud compute instances create` prints both progress text ("Created [...]")
-  # and the --format output to the same stream. Send progress to stderr-captured
-  # buf and keep only the IP on stdout by piping through tail.
-  if out=$(gcloud compute instances create "$NAME" \
+  # and the --format output to the same stream. Wrap in `timeout` so a hung
+  # create operation doesn't burn the whole multi-zone budget. NB: capture
+  # rc explicitly (not via `if cmd; then`) because $? after a failed
+  # `if cmd; then ...; fi` is the if-statement's exit code (always 0).
+  out=$(timeout "${PER_ZONE_TIMEOUT}s" gcloud compute instances create "$NAME" \
     --project="$PROJECT" \
     --zone="$zone" \
     --machine-type="$MACHINE" \
-    --provisioning-model=SPOT \
-    --instance-termination-action=DELETE \
-    --max-run-duration="${MAX_RUN_SECONDS}s" \
+    "${provisioning_args[@]}" \
     --accelerator="$ACCEL" \
     --image-family="$IMAGE_FAMILY" \
     --image-project="$IMAGE_PROJECT" \
@@ -87,7 +114,8 @@ for zone in $ZONE_LIST; do
     --tags=qwen-bench \
     "${metadata_from_file_args[@]}" \
     ${metadata_arg:+"$metadata_arg"} \
-    --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>&1); then
+    --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>&1) && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
     # Strip progress chatter and pick the line that looks like a public IPv4.
     ip=$(echo "$out" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1)
     if [ -z "$ip" ]; then
@@ -102,6 +130,16 @@ for zone in $ZONE_LIST; do
     exit 0
   fi
   last_err="$out"
+  # rc=124 = our `timeout` killed gcloud (per-zone hard cap exceeded).
+  # Treat that exactly like a stockout. Best-effort fire-and-forget delete
+  # of any half-created VM in this zone so a re-attempt doesn't 409 on
+  # name conflict (the teardown step is also resilient to wrong zones).
+  if [ "$rc" -eq 124 ]; then
+    echo "[create-vm] $zone timed out after ${PER_ZONE_TIMEOUT}s; trying next zone"
+    gcloud compute instances delete "$NAME" --project="$PROJECT" --zone="$zone" \
+      --quiet >/dev/null 2>&1 &
+    continue
+  fi
   # Stockout AND quota-exhausted signals both mean "try elsewhere". Stockout
   # is zone-scoped; quota is region-scoped so the next us-central1 zone won't
   # help, but a region-interleaved ZONE_LIST hops to a fresh region anyway.

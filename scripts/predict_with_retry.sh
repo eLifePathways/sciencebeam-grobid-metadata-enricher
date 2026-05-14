@@ -53,6 +53,7 @@ reprovision() {
         QWEN_MODEL="$QWEN_MODEL" \
         PROJECT="$PROJECT" \
         NAME="$NAME" \
+        PROVISIONING_MODEL="${PROVISIONING_MODEL:-SPOT}" \
         bash deploy/qwen/create-vm.sh)
   echo "$out"
   local ip zone
