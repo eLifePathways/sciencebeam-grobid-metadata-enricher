@@ -182,7 +182,7 @@ jobs:
         id: pack
         env:
           BUCKET: gs://${{ vars.GCP_LORA_BUCKET }}
-          HF_REPO: elifepathways/sciencebeam-lora-qwen3-8b
+          HF_REPO: elifepathways/Qwen3-8B-ft
         run: |
           set -euo pipefail
           # HF repo layout: <task>/{adapter_config.json, adapter_model.safetensors,
