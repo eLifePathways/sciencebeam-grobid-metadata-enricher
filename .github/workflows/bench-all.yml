@@ -354,21 +354,23 @@ jobs:
         with:
           python-version: "3.11"
       - run: uv sync --extra bench --extra dev
-      # The upload-artifact action stores files with their full path relative
-      # to GITHUB_WORKSPACE. Downloading with path:. expands them back to the
-      # same layout — i.e., $RUN_DIR/{azure,qwen_base,qwen_lora}/per_document.jsonl.
-      # Each download is optional (continue-on-error) so a failed arm doesn't
-      # block scoring the surviving one.
+      # upload-artifact@v4 strips the LONGEST COMMON ANCESTOR path off the
+      # uploaded files. The OR upload spans azure/ + qwen_base/ so the
+      # ancestor is RUN_DIR and the artifact preserves those two subdirs.
+      # The LoRA upload is three files all under RUN_DIR/qwen_lora/, so the
+      # ancestor IS qwen_lora/ — the artifact lands flat. Download each
+      # artifact into the destination where the score step expects it.
+      # Each download is optional so one failed arm doesn't block scoring.
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: bench-all-or-${{ github.run_id }}
-          path: .
+          path: ${{ env.RUN_DIR }}
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: bench-all-lora-${{ github.run_id }}
-          path: .
+          path: ${{ env.RUN_DIR }}/qwen_lora
       - name: Score (side-by-side)
         run: |
           set -euo pipefail
