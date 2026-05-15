@@ -14,13 +14,13 @@ import yaml
 
 from benchmarks.gold import extract_gold
 from grobid_metadata_enricher.clients import (
-    PREFER_AOAI_POOL,
     DEFAULT_OPENAI_API_KEY,
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
     DEFAULT_PARSER,
     DEFAULT_PARSER_URLS,
     PARSER_GROBID,
+    PREFER_AOAI_POOL,
     SUPPORTED_PARSERS,
     AoaiPool,
     ContentFilterError,

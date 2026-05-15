@@ -10,7 +10,6 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .clients import (
-    PREFER_AOAI_POOL,
     DEFAULT_GROBID_TIMEOUT,
     DEFAULT_GROBID_URL,
     DEFAULT_OPENAI_API_KEY,
@@ -19,6 +18,7 @@ from .clients import (
     DEFAULT_PARSER,
     DEFAULT_PDFALTO_BIN,
     DEFAULT_POOL_PATH,
+    PREFER_AOAI_POOL,
     AoaiPool,
     OpenAIClient,
     run_grobid,
