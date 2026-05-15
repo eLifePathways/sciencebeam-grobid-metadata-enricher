@@ -134,6 +134,7 @@ with-vllm-download:
 		--local-dir .local/qwen3-8b-ft
 
 with-vllm-start:
+	$(COMPOSE_VLLM) build api
 	$(COMPOSE_VLLM) up -d --wait vllm
 	@echo "vLLM ready at http://localhost:18000 (base: Qwen/Qwen3-8B-AWQ + 7 LoRA adapters)"
 
@@ -148,6 +149,7 @@ with-vllm-clean:
 
 
 with-vllm-phoenix-start:
+	$(COMPOSE_VLLM_PHOENIX) build api
 	$(COMPOSE_VLLM_PHOENIX) up -d --wait
 	@echo "Ready. API at http://localhost:8000, Phoenix at http://localhost:6006, vLLM at http://localhost:18000"
 

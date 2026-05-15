@@ -14,6 +14,7 @@ import yaml
 
 from benchmarks.gold import extract_gold
 from grobid_metadata_enricher.clients import (
+    PREFER_AOAI_POOL,
     DEFAULT_OPENAI_API_KEY,
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
@@ -373,7 +374,7 @@ def main() -> None:
     print(f"Manifest: {len(manifest)} records across {len(cfg['corpora'])} corpora", flush=True)
 
     client: Union[AoaiPool, OpenAIClient]
-    if DEFAULT_OPENAI_API_KEY and DEFAULT_OPENAI_MODEL:
+    if not PREFER_AOAI_POOL and DEFAULT_OPENAI_API_KEY and DEFAULT_OPENAI_MODEL:
         client = OpenAIClient(
             api_key=DEFAULT_OPENAI_API_KEY,
             model=DEFAULT_OPENAI_MODEL,

@@ -17,6 +17,7 @@ import httpx
 from .telemetry import get_tracer
 
 DEFAULT_POOL_PATH = Path(os.getenv("AOAI_POOL_PATH", "aoai_pool.json"))
+PREFER_AOAI_POOL = os.getenv("PREFER_AOAI_POOL", "").lower() in {"1", "true", "yes"}
 DEFAULT_GROBID_TIMEOUT = int(os.getenv("GROBID_TIMEOUT", "60"))
 DEFAULT_PDFALTO_BIN = Path(os.getenv("PDFALTO_BIN", "pdfalto"))
 # Upstream PDF parser: "grobid" (default, lfoppiano/grobid:0.9.0-crf compatible)
