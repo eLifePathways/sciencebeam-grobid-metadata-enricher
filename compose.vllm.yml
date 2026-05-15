@@ -72,6 +72,7 @@ services:
       AOAI_POOL_PATH: /app/runtime/local_vllm_pool.json
       STEP_LORA_MAP_JSON: '{"HEADER_METADATA":"header_metadata","TEI_METADATA":"header_metadata","TEI_VALIDATED":"header_metadata","CONTENT_BODY_SECTIONS":"body_sections","CONTENT_REFERENCES":"references","CONTENT_FIGURE_CAPTIONS":"figure_captions","CONTENT_TABLE_CAPTIONS":"table_captions","KEYWORD_TRANSLATE":"keywords","KEYWORD_SELECT":"keywords","KEYWORD_EXTRACT":"keywords","KEYWORD_INFER":"keywords","IDENTIFIER_SELECT":"identifiers"}'
       LLM_CHAT_TEMPLATE_KWARGS_JSON: '{"enable_thinking": false}'
+      LLM_EXTRA_MAX_TOKENS: "2000"
     depends_on:
       vllm:
         condition: service_healthy
@@ -85,6 +86,7 @@ services:
       AOAI_POOL_PATH: /app/runtime/local_vllm_pool.json
       STEP_LORA_MAP_JSON: '{"HEADER_METADATA":"header_metadata","TEI_METADATA":"header_metadata","TEI_VALIDATED":"header_metadata","CONTENT_BODY_SECTIONS":"body_sections","CONTENT_REFERENCES":"references","CONTENT_FIGURE_CAPTIONS":"figure_captions","CONTENT_TABLE_CAPTIONS":"table_captions","KEYWORD_TRANSLATE":"keywords","KEYWORD_SELECT":"keywords","KEYWORD_EXTRACT":"keywords","KEYWORD_INFER":"keywords","IDENTIFIER_SELECT":"identifiers"}'
       LLM_CHAT_TEMPLATE_KWARGS_JSON: '{"enable_thinking": false}'
+      LLM_EXTRA_MAX_TOKENS: "2000"
     depends_on:
       vllm:
         condition: service_healthy
