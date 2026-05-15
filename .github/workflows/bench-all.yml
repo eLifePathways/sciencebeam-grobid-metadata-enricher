@@ -1,12 +1,13 @@
 name: bench-all
 
-# One-shot benchmark comparing Grobid, Qwen base, Qwen+LoRA pack and Azure
-# side-by-side on the same documents.
+# Side-by-side benchmark across:
+#   - Grobid (always; computed from the parse step)
+#   - Qwen3-8B base via OpenRouter (no GCP, on the GH runner)
+#   - Qwen3-8B + LoRA pack via GCP spot 8xA100 (with preemption retry)
+#   - Azure gpt-4o-mini via AOAI_POOL_JSON (no GCP)
 #
-# Order is cost-tuned: Azure runs first (no VM yet), warming the Grobid
-# parse cache for all three backends; the 8xA100 spot VM is only
-# provisioned after Azure finishes so its billed lifetime covers just the
-# vLLM warm + the two Qwen predicts.
+# Layout: openrouter + lora run in parallel as separate jobs. Once both
+# finish, the score job aggregates with benchmarks.score_multi.
 
 on:
   workflow_dispatch:
@@ -17,31 +18,45 @@ on:
         default: smoke
         type: choice
         options: [smoke, full]
+      provisioning:
+        description: 'GCP provisioning model for the LoRA arm. SPOT is cheap but preempts under capacity churn; ON_DEMAND guarantees availability (~$15/hr incremental).'
+        required: false
+        default: SPOT
+        type: choice
+        options: [SPOT, ON_DEMAND]
+      cache_or_from_run:
+        description: 'Reuse the openrouter arm artifact (Azure + Qwen-base) from a prior successful run id. Skips the openrouter job entirely. Match `mode` of the prior run.'
+        required: false
+        default: ''
+        type: string
   pull_request:
     types: [labeled]
 
 permissions:
   contents: read
-  id-token: write       # WIF
+  id-token: write       # WIF for the GCP arm
   pull-requests: write  # cml comment
 
+env:
+  RUN_ID: ${{ github.run_id }}
+  AZURE_MODEL_LABEL: ${{ vars.AZURE_MODEL_LABEL || 'gpt-4o-mini' }}
+
 jobs:
-  bench-all:
-    if: github.event_name == 'workflow_dispatch' ||
+  # ============================================================
+  # OpenRouter arms: Azure + Qwen-base via OpenRouter. No GCP.
+  # ============================================================
+  openrouter:
+    # Skip when cache_or_from_run is set: the score job will pull the OR
+    # arm's artifact from that prior run instead of producing a fresh one.
+    if: (github.event_name == 'workflow_dispatch' && inputs.cache_or_from_run == '') ||
         (github.event_name == 'pull_request' && github.event.label.name == 'bench:all')
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-
+    timeout-minutes: 60
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       AOAI_POOL_JSON: ${{ secrets.AOAI_POOL_JSON }}
-      VM_NAME: bench-all-${{ github.run_id }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       RUN_DIR: benchmarks/runs/${{ github.run_id }}
-      # Qwen3-family thinking mode burns max_tokens on chain-of-thought
-      # before the JSON answer; disable via the chat template kwarg. AOAI
-      # ignores the field, so the env is safe to leave set for all steps.
-      QWEN_TEMPLATE_KWARGS: '{"enable_thinking": false}'
-
     services:
       grobid:
         image: lfoppiano/grobid:0.9.0-crf
@@ -51,56 +66,44 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 30
-
     steps:
       - uses: actions/checkout@v4
-
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_BENCH_SA }}
-
-      - uses: google-github-actions/setup-gcloud@v2
-
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
-
       - name: Install Python deps
         run: uv sync --extra bench --extra dev
-
-      - name: Extract pdfalto from Grobid image
+      - name: Extract pdfalto
         run: |
           docker create --name pdfalto_src lfoppiano/grobid:0.9.0-crf
           docker cp pdfalto_src:/opt/grobid/grobid-home/pdfalto/lin-64/pdfalto ./pdfalto
           sudo install -m 755 ./pdfalto /usr/local/bin/pdfalto
           docker rm pdfalto_src
-
       - name: Materialise Azure pool secret
         run: |
           mkdir -p runtime
           printf '%s' "$AOAI_POOL_JSON" > runtime/aoai_pool.json
           python3 -c "import json; json.load(open('runtime/aoai_pool.json'))" \
-            || { echo "::error::AOAI_POOL_JSON secret is not valid JSON"; exit 1; }
-
-      - name: Build LoRA pack (qwen35 preset)
-        id: pack
-        env:
-          BUCKET: gs://${{ vars.GCP_LORA_BUCKET }}
+            || { echo "::error::AOAI_POOL_JSON not valid JSON"; exit 1; }
+      - name: Resolve Qwen3-8B on OpenRouter
+        id: or_resolve
         run: |
-          set -euo pipefail
-          names=(body_sections_qwen35 figure_captions_qwen35 header_metadata_qwen35 identifiers_qwen35 keywords_qwen35 references_qwen35 table_captions_qwen35)
-          : > /tmp/lora_pack.tsv
-          for n in "${names[@]}"; do
-            printf "%s\t%s/lora/%s/\n" "$n" "$BUCKET" "$n" >> /tmp/lora_pack.tsv
-          done
-          cat > /tmp/step_lora_map.json <<'EOF'
-          {"HEADER_METADATA":"header_metadata_qwen35","TEI_METADATA":"header_metadata_qwen35","TEI_VALIDATED":"header_metadata_qwen35","CONTENT_BODY_SECTIONS":"body_sections_qwen35","CONTENT_REFERENCES":"references_qwen35","CONTENT_FIGURE_CAPTIONS":"figure_captions_qwen35","CONTENT_TABLE_CAPTIONS":"table_captions_qwen35","KEYWORD_TRANSLATE":"keywords_qwen35","KEYWORD_SELECT":"keywords_qwen35","KEYWORD_EXTRACT":"keywords_qwen35","KEYWORD_INFER":"keywords_qwen35","IDENTIFIER_SELECT":"identifiers_qwen35"}
-          EOF
-
-      # Predict against Azure first while the Qwen VM doesn't exist yet.
-      # The Grobid+pdfalto parse done here is hardlinked into the two
-      # Qwen run dirs so they skip re-parsing.
+          or_id=$(uv run python scripts/resolve_openrouter_model.py 'Qwen/Qwen3-8B')
+          echo "or_id=$or_id" >> "$GITHUB_OUTPUT"
+          echo "::notice::OR id resolved: $or_id"
+      - name: Build OpenRouter Qwen-base pool JSON
+        run: |
+          python3 - <<PY > runtime/qwen_or_pool.json
+          import json, os
+          print(json.dumps([{
+              "id": "or-0",
+              "endpoint": "https://openrouter.ai/api",
+              "deployment": "${{ steps.or_resolve.outputs.or_id }}",
+              "apiKey": os.environ["OPENROUTER_API_KEY"],
+              "apiVersion": "unused",
+              "kind": "openai",
+          }], indent=2))
+          PY
       - name: Predict — Azure
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
@@ -110,31 +113,139 @@ jobs:
             --mode   ${{ inputs.mode || 'smoke' }} \
             --out    "$RUN_DIR/azure" \
             --pool-path runtime/aoai_pool.json
-
-      - name: Share Grobid/pdfalto artefacts to Qwen run dirs
+      - name: Hardlink TEI/ALTO to Qwen-base sub-run
         run: |
-          for sub in qwen_base qwen_lora; do
-            for corpus_dir in "$RUN_DIR/azure"/*/; do
-              corpus=$(basename "$corpus_dir")
-              for kind in tei alto; do
-                src="$corpus_dir/$kind"
-                if [ -d "$src" ]; then
-                  dst="$RUN_DIR/$sub/$corpus/$kind"
-                  mkdir -p "$dst"
-                  cp -al "$src"/. "$dst"/ 2>/dev/null || cp -r "$src"/. "$dst"/
-                fi
-              done
+          for corpus_dir in "$RUN_DIR/azure"/*/; do
+            corpus=$(basename "$corpus_dir")
+            for kind in tei alto; do
+              src="$corpus_dir/$kind"
+              if [ -d "$src" ]; then
+                dst="$RUN_DIR/qwen_base/$corpus/$kind"
+                mkdir -p "$dst"
+                cp -al "$src"/. "$dst"/ 2>/dev/null || cp -r "$src"/. "$dst"/
+              fi
             done
           done
+      - name: Predict — Qwen-base via OpenRouter
+        env:
+          PDFALTO_BIN: /usr/local/bin/pdfalto
+          # Qwen3 chat template enables CoT thinking by default; that eats
+          # max_tokens before the answer. Disable for both OR transports.
+          LLM_CHAT_TEMPLATE_KWARGS_JSON: '{"enable_thinking": false}'
+        run: |
+          uv run python -m benchmarks.predict \
+            --config benchmarks/bench.yaml \
+            --mode   ${{ inputs.mode || 'smoke' }} \
+            --out    "$RUN_DIR/qwen_base" \
+            --pool-path runtime/qwen_or_pool.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-all-or-${{ github.run_id }}
+          path: |
+            ${{ env.RUN_DIR }}/azure/per_document.jsonl
+            ${{ env.RUN_DIR }}/azure/run_record.json
+            ${{ env.RUN_DIR }}/azure/errors.json
+            ${{ env.RUN_DIR }}/qwen_base/per_document.jsonl
+            ${{ env.RUN_DIR }}/qwen_base/run_record.json
+            ${{ env.RUN_DIR }}/qwen_base/errors.json
+          retention-days: 30
 
-      - name: Provision Qwen spot cluster
+  # ============================================================
+  # GCP arm: Qwen3-8B + LoRA pack on spot 8xA100. Retries on
+  # preemption by re-provisioning a fresh VM and re-running predict.
+  # ============================================================
+  lora:
+    if: github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && github.event.label.name == 'bench:all')
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      VM_NAME: bench-all-${{ github.run_id }}
+      RUN_DIR: benchmarks/runs/${{ github.run_id }}
+    services:
+      grobid:
+        image: lfoppiano/grobid:0.9.0-crf
+        ports: ["8070:8070"]
+        options: >-
+          --health-cmd "curl -sf http://localhost:8070/api/isalive || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_BENCH_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+      - name: Install Python deps
+        run: uv sync --extra bench --extra dev
+      - name: Extract pdfalto
+        run: |
+          docker create --name pdfalto_src lfoppiano/grobid:0.9.0-crf
+          docker cp pdfalto_src:/opt/grobid/grobid-home/pdfalto/lin-64/pdfalto ./pdfalto
+          sudo install -m 755 ./pdfalto /usr/local/bin/pdfalto
+          docker rm pdfalto_src
+      - name: Sync Qwen3-8B LoRA pack HF → GCS
+        id: pack
+        env:
+          BUCKET: gs://${{ vars.GCP_LORA_BUCKET }}
+          HF_REPO: elifepathways/Qwen3-8B-ft
+        run: |
+          set -euo pipefail
+          # HF repo layout: <task>/{adapter_config.json, adapter_model.safetensors,
+          # tokenizer*, chat_template*, ...}. snapshot_download lands the whole
+          # thing locally; we mirror each task subdir to gs://<bucket>/lora/qwen3-8b/<task>/
+          # for the startup script (which only speaks GCS, not HF). training_args.bin
+          # and README.md are training-time artifacts vLLM never reads.
+          local_dir=/tmp/hf_lora_pack
+          uv run python - <<PY
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id="$HF_REPO",
+              local_dir="$local_dir",
+              allow_patterns=["*/adapter_*", "*/tokenizer*", "*/chat_template*"],
+          )
+          PY
+          tasks=(body_sections figure_captions header_metadata identifiers keywords references table_captions)
+          : > /tmp/lora_pack.tsv
+          for t in "${tasks[@]}"; do
+            src="$local_dir/$t"
+            gcs="$BUCKET/lora/qwen3-8b/$t/"
+            [ -d "$src" ] || { echo "missing task dir: $src" >&2; exit 1; }
+            gcloud storage rsync --recursive --delete-unmatched-destination-objects "$src" "$gcs"
+            printf "%s\t%s\n" "$t" "$gcs" >> /tmp/lora_pack.tsv
+          done
+          cat > /tmp/step_lora_map.json <<'EOF'
+          {"HEADER_METADATA":"header_metadata","TEI_METADATA":"header_metadata","TEI_VALIDATED":"header_metadata","CONTENT_BODY_SECTIONS":"body_sections","CONTENT_REFERENCES":"references","CONTENT_FIGURE_CAPTIONS":"figure_captions","CONTENT_TABLE_CAPTIONS":"table_captions","KEYWORD_TRANSLATE":"keywords","KEYWORD_SELECT":"keywords","KEYWORD_EXTRACT":"keywords","KEYWORD_INFER":"keywords","IDENTIFIER_SELECT":"identifiers"}
+          EOF
+      - name: Provision Qwen spot cluster (initial)
         id: provision
         env:
           PROJECT: ${{ vars.GCP_PROJECT }}
           NAME: ${{ env.VM_NAME }}
           LORA_PACK_FILE: /tmp/lora_pack.tsv
           LORA_MAX_RANK: '16'
-          QWEN_MODEL: 'Qwen/Qwen3.5-9B'
+          QWEN_MODEL: 'Qwen/Qwen3-8B'
+          PROVISIONING_MODEL: ${{ inputs.provisioning || 'SPOT' }}
+          # On-demand A100 quota auto-approved 2026-05-14 in us-central1 +
+          # us-east1 + europe-west4 (8 GPUs / 96 A2-CPUs per region). For
+          # ON_DEMAND runs we walk those three regions; SPOT uses create-vm.sh's
+          # default region-interleaved list.
+          ZONE_LIST: ${{ inputs.provisioning == 'ON_DEMAND' && 'us-east1-b us-east1-c us-east1-d us-central1-a us-central1-b us-central1-c us-central1-f europe-west4-a europe-west4-b' || '' }}
+          # 900s per zone: STAGING for 8xA100 can legitimately take ~5-10 min.
+          # 180s was killing healthy creates and leaking orphans that held
+          # quota, making subsequent zones fail with QUOTA_EXCEEDED.
+          PER_ZONE_TIMEOUT: '900'
+          # Pre-warmed torch.compile + AOT cache pushed from a prior bake VM.
+          # The startup script gsutil-rsyncs this into /var/vllm-compile-cache
+          # so each vLLM container skips ~150s of compile + first-pass warmup.
+          VLLM_CACHE_GCS: gs://${{ vars.GCP_LORA_BUCKET }}/vllm-cache/qwen3-8b/
         run: |
           out=$(bash deploy/qwen/create-vm.sh)
           echo "$out"
@@ -142,111 +253,190 @@ jobs:
           zone=$(echo "$out" | awk -F= '/^ZONE=/ {print $2}' | tail -1)
           echo "ip=$ip"     >> "$GITHUB_OUTPUT"
           echo "zone=$zone" >> "$GITHUB_OUTPUT"
+          echo "$zone" > /tmp/predict_retry_zone
           test -n "$ip" -a -n "$zone"
-
-      - name: Wait for 8 vLLM replicas
-        env:
-          IP: ${{ steps.provision.outputs.ip }}
-          MODEL_NAME: 'Qwen/Qwen3.5-9B'
-        run: |
-          payload=$(printf '{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' "$MODEL_NAME")
-          # Qwen3.5-9B is NOT in the baked HF cache (image only pre-fetches
-          # Qwen2.5-7B), so first-run cold pulls ~18GB and adds ~5-7 min on
-          # top of the multi-LoRA preload. Bump to 20 min.
-          deadline=$(( $(date +%s) + 1200 ))
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            ready=0
-            for i in 0 1 2 3 4 5 6 7; do
-              code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
-                -X POST "http://${IP}:$((8000+i))/v1/chat/completions" \
-                -H 'Content-Type: application/json' \
-                --data "$payload" || echo "000")
-              [ "$code" = "200" ] && ready=$((ready+1))
-            done
-            echo "[$(date +%H:%M:%S)] $ready/8 vLLM ready"
-            if [ "$ready" -eq 8 ]; then exit 0; fi
-            sleep 15
-          done
-          echo "::error::only $ready/8 vLLM replicas ready after 20 min"
-          exit 1
-
-      - name: Build Qwen pool JSON
+      - name: Wait for vLLM
+        run: bash scripts/wait_vllm.sh ${{ steps.provision.outputs.ip }} 'Qwen/Qwen3-8B'
+      - name: Build initial Qwen pool JSON
         env:
           IP: ${{ steps.provision.outputs.ip }}
         run: |
           mkdir -p runtime
           python3 - <<PY > runtime/qwen_pool.json
-          import json
-          ip = "${IP}"
+          import json, os
+          ip = os.environ["IP"]
           print(json.dumps([
               {"id": f"qwen-{i}",
                "endpoint": f"http://{ip}:{8000+i}",
-               "deployment": "Qwen/Qwen3.5-9B",
+               "deployment": "Qwen/Qwen3-8B",
                "apiKey": "local",
                "apiVersion": "unused",
                "kind": "openai"}
               for i in range(8)
           ], indent=2))
           PY
-
-      - name: Predict — Qwen base
+      - name: Predict — Qwen3-8B + LoRA pack (with retry)
         env:
           PDFALTO_BIN: /usr/local/bin/pdfalto
-          LLM_CHAT_TEMPLATE_KWARGS_JSON: ${{ env.QWEN_TEMPLATE_KWARGS }}
-        run: |
-          uv run python -m benchmarks.predict \
-            --config benchmarks/bench.yaml \
-            --mode   ${{ inputs.mode || 'smoke' }} \
-            --out    "$RUN_DIR/qwen_base" \
-            --pool-path runtime/qwen_pool.json
-
-      - name: Predict — Qwen + LoRA pack
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          NAME: ${{ env.VM_NAME }}
+          LORA_PACK_FILE: /tmp/lora_pack.tsv
+          LORA_MAX_RANK: '16'
+          QWEN_MODEL: 'Qwen/Qwen3-8B'
+          PROVISIONING_MODEL: ${{ inputs.provisioning || 'SPOT' }}
+          ZONE_LIST: ${{ inputs.provisioning == 'ON_DEMAND' && 'us-east1-b us-east1-c us-east1-d us-central1-a us-central1-b us-central1-c us-central1-f europe-west4-a europe-west4-b' || '' }}
+          PER_ZONE_TIMEOUT: '900'
+          POOL_PATH: runtime/qwen_pool.json
+          BENCH_CONFIG: benchmarks/bench.yaml
+          BENCH_MODE: ${{ inputs.mode || 'smoke' }}
+          BENCH_OUT: ${{ env.RUN_DIR }}/qwen_lora
+          STEP_LORA_MAP_FILE: /tmp/step_lora_map.json
+          LLM_CHAT_TEMPLATE_KWARGS_JSON: '{"enable_thinking": false}'
+          MAX_ATTEMPTS: '3'
+        run: bash scripts/predict_with_retry.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-all-lora-${{ github.run_id }}
+          path: |
+            ${{ env.RUN_DIR }}/qwen_lora/per_document.jsonl
+            ${{ env.RUN_DIR }}/qwen_lora/run_record.json
+            ${{ env.RUN_DIR }}/qwen_lora/errors.json
+          retention-days: 30
+      - name: Push torch.compile cache to GCS
+        # Run only on successful predict so we don't poison the cache with
+        # half-compiled artifacts. The /var/vllm-compile-cache dir is the
+        # docker bind-mount target the startup script set up; copying it
+        # back to gs://<bucket>/vllm-cache/qwen3-8b/ shaves ~2.5min off
+        # subsequent cold-starts (Dynamo bytecode + Inductor compile).
+        if: success()
         env:
-          PDFALTO_BIN: /usr/local/bin/pdfalto
-          LLM_CHAT_TEMPLATE_KWARGS_JSON: ${{ env.QWEN_TEMPLATE_KWARGS }}
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          BUCKET: gs://${{ vars.GCP_LORA_BUCKET }}
         run: |
-          STEP_LORA_MAP_JSON="$(cat /tmp/step_lora_map.json)" \
-          uv run python -m benchmarks.predict \
-            --config benchmarks/bench.yaml \
-            --mode   ${{ inputs.mode || 'smoke' }} \
-            --out    "$RUN_DIR/qwen_lora" \
-            --pool-path runtime/qwen_pool.json
-
+          zone=$(cat /tmp/predict_retry_zone 2>/dev/null || echo "${{ steps.provision.outputs.zone }}")
+          [ -n "$zone" ] || { echo "no zone recorded; skipping cache push"; exit 0; }
+          gcloud compute ssh "$VM_NAME" --project="$PROJECT" --zone="$zone" \
+            --command="sudo gcloud storage rsync --recursive --delete-unmatched-destination-objects /var/vllm-compile-cache $BUCKET/vllm-cache/qwen3-8b/" \
+            || echo "::warning::compile cache push failed (non-fatal)"
       - name: Tear down Qwen spot cluster
-        if: always() && steps.provision.outputs.ip
+        if: always()
         env:
           PROJECT: ${{ vars.GCP_PROJECT }}
         run: |
-          gcloud compute instances delete ${{ env.VM_NAME }} \
+          # Find the VM regardless of which zone it ended up in. Provision
+          # failures can leave orphan STAGING VMs whose zone we never wrote
+          # to /tmp/predict_retry_zone, and the per-zone-timeout fallback
+          # path in create-vm.sh may also strand VMs.
+          zones=$(gcloud compute instances list \
             --project="$PROJECT" \
-            --zone="${{ steps.provision.outputs.zone }}" \
-            --quiet || true
+            --filter="name=$VM_NAME" \
+            --format="value(zone)" 2>/dev/null | awk -F/ '{print $NF}')
+          if [ -z "$zones" ]; then
+            zones=$(cat /tmp/predict_retry_zone 2>/dev/null || echo "${{ steps.provision.outputs.zone }}")
+          fi
+          for z in $zones; do
+            [ -n "$z" ] || continue
+            echo "[teardown] deleting $VM_NAME in $z"
+            gcloud compute instances delete "$VM_NAME" \
+              --project="$PROJECT" --zone="$z" --quiet || true
+          done
 
+  # ============================================================
+  # Score: produce a side-by-side report from whichever arms succeeded.
+  # All-or-nothing gating wastes the surviving arm's output, so this job
+  # runs whenever at least one arm finished and assembles --run flags
+  # dynamically for the artifacts that actually downloaded.
+  # ============================================================
+  score:
+    needs: [openrouter, lora]
+    # Run if any of: openrouter arm succeeded, lora arm succeeded, or the
+    # caller passed cache_or_from_run (in which case openrouter is `skipped`
+    # but its data is available from the prior run).
+    if: always() && (needs.openrouter.result == 'success' || needs.lora.result == 'success' || inputs.cache_or_from_run != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUN_DIR: benchmarks/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+      - run: uv sync --extra bench --extra dev
+      # upload-artifact@v4 strips the LONGEST COMMON ANCESTOR path off the
+      # uploaded files. The OR upload spans azure/ + qwen_base/ so the
+      # ancestor is RUN_DIR and the artifact preserves those two subdirs.
+      # The LoRA upload is three files all under RUN_DIR/qwen_lora/, so the
+      # ancestor IS qwen_lora/ — the artifact lands flat. Download each
+      # artifact into the destination where the score step expects it.
+      # Each download is optional so one failed arm doesn't block scoring.
+      # When cache_or_from_run is set, the OR artifact comes from that prior
+      # run id instead (and lives under bench-all-or-<that_id>).
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: bench-all-or-${{ inputs.cache_or_from_run || github.run_id }}
+          path: ${{ env.RUN_DIR }}
+          # Cross-run download needs explicit run-id + a token with
+          # `actions: read` on the prior run. The default GITHUB_TOKEN works
+          # for runs in the same repo.
+          run-id: ${{ inputs.cache_or_from_run || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: bench-all-lora-${{ github.run_id }}
+          path: ${{ env.RUN_DIR }}/qwen_lora
       - name: Score (side-by-side)
-        env:
-          AZURE_MODEL_LABEL: ${{ vars.AZURE_MODEL_LABEL || 'gpt-4o-mini' }}
         run: |
+          set -euo pipefail
+          # Each arm contributes a --run flag only if its per_document.jsonl
+          # actually arrived. score_multi crashes on missing input paths, so
+          # the workflow skips absent arms and annotates them in the title.
+          args=()
+          missing=()
+          if [ -s "$RUN_DIR/qwen_base/per_document.jsonl" ]; then
+            args+=(--run "Qwen3-8B base (OpenRouter)=$RUN_DIR/qwen_base")
+          else
+            missing+=("qwen_base")
+          fi
+          if [ -s "$RUN_DIR/qwen_lora/per_document.jsonl" ]; then
+            args+=(--run "Qwen3-8B + LoRA pack=$RUN_DIR/qwen_lora")
+          else
+            missing+=("qwen_lora")
+          fi
+          if [ -s "$RUN_DIR/azure/per_document.jsonl" ]; then
+            args+=(--run "Azure $AZURE_MODEL_LABEL=$RUN_DIR/azure")
+          else
+            missing+=("azure")
+          fi
+          if [ "${#args[@]}" -eq 0 ]; then
+            echo "::error::no arm produced per_document.jsonl"; exit 1
+          fi
+          title="bench-all ${{ github.run_id }}"
+          if [ -n "${{ inputs.cache_or_from_run }}" ]; then
+            title="$title (OR cached from run ${{ inputs.cache_or_from_run }})"
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            title="$title (missing: ${missing[*]})"
+          fi
           uv run python -m benchmarks.score_multi \
             --config benchmarks/bench.yaml \
-            --run "Qwen3.5-9B base=$RUN_DIR/qwen_base" \
-            --run "Qwen3.5-9B + qwen35 LoRA pack=$RUN_DIR/qwen_lora" \
-            --run "Azure $AZURE_MODEL_LABEL=$RUN_DIR/azure" \
-            --out $RUN_DIR/report.md \
-            --title "bench-all ${{ github.run_id }}"
+            "${args[@]}" \
+            --out "$RUN_DIR/report.md" \
+            --title "$title"
           echo "===REPORT==="
-          cat $RUN_DIR/report.md
-
+          cat "$RUN_DIR/report.md"
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: bench-all-${{ github.run_id }}
           path: |
             ${{ env.RUN_DIR }}/report.md
-            ${{ env.RUN_DIR }}/*/per_document.jsonl
-            ${{ env.RUN_DIR }}/*/run_record.json
-            ${{ env.RUN_DIR }}/*/errors.json
+            ${{ env.RUN_DIR }}/azure/per_document.jsonl
+            ${{ env.RUN_DIR }}/qwen_base/per_document.jsonl
+            ${{ env.RUN_DIR }}/qwen_lora/per_document.jsonl
           retention-days: 30
-
       - name: Install CML
         if: github.event_name == 'pull_request'
         run: npm install -g @dvcorg/cml
@@ -254,4 +444,4 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cml comment create $RUN_DIR/report.md
+        run: cml comment create "$RUN_DIR/report.md"

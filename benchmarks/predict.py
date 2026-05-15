@@ -468,9 +468,12 @@ def main() -> None:
                     try:
                         _write_prediction_result(fut.result(), row, done, len(ready_rows), f)
                     except LLMCallError as exc:
-                        raise LLMCallError(
-                            f"{row['corpus']}/{row['record_id']}: {exc}"
-                        ) from exc
+                        # Per-doc tolerance: a single transient timeout, content
+                        # filter, or provider 5xx must not abort a 150-doc bench.
+                        # The doc lands in errors.json and the rest of the run
+                        # proceeds.
+                        errors.append({"record_id": row["record_id"], "corpus": row["corpus"],
+                                       "error": f"LLMCallError: {row['corpus']}/{row['record_id']}: {exc}"})
                     except Exception as exc:
                         errors.append({"record_id": row["record_id"], "corpus": row["corpus"], "error": str(exc)})
     else:
@@ -484,9 +487,8 @@ def main() -> None:
                     try:
                         _write_prediction_result(fut.result(), row, done, len(manifest), f)
                     except LLMCallError as exc:
-                        raise LLMCallError(
-                            f"{row['corpus']}/{row['record_id']}: {exc}"
-                        ) from exc
+                        errors.append({"record_id": row["record_id"], "corpus": row["corpus"],
+                                       "error": f"LLMCallError: {row['corpus']}/{row['record_id']}: {exc}"})
                     except Exception as exc:
                         errors.append({"record_id": row["record_id"], "corpus": row["corpus"], "error": str(exc)})
 
@@ -558,6 +560,17 @@ def main() -> None:
     }
     (args.out / "run_record.json").write_text(json.dumps(run_record, indent=2), encoding="utf-8")
     print(f"Done. {run_record['n_records']} records, {run_record['n_errors']} errors, {elapsed:.0f}s", flush=True)
+
+    # Safety net for the per-doc LLMCallError tolerance above: if more than
+    # half of the manifest hit an LLM error, the cluster is effectively
+    # down and downstream scoring would compare empty/sparse data — fail
+    # the run loudly instead.
+    total = max(n_records + len(errors), 1)
+    if len(errors) / total > 0.5:
+        raise LLMCallError(
+            f"too many predict errors: {len(errors)}/{total} "
+            f"({100 * len(errors) / total:.0f}%) — see errors.json"
+        )
 
 
 def _git_sha() -> str:

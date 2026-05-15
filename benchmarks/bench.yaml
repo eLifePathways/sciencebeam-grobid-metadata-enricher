@@ -73,12 +73,16 @@ bootstrap:
 
 doc_concurrency: 4   # legacy one-stage fallback
 parse_concurrency: 4   # lfoppiano/grobid:0.9.0-crf saturates at ~4-6 parallel; 10 hits HTTP 503
-llm_doc_concurrency: 24
+llm_doc_concurrency: 48   # raised from 24: vLLM live metrics showed only 5-7 running per worker
+                          # while max-num-seqs=256, GPU util sat at ~20% and KV cache at ~5%.
+                          # Doubling client concurrency uses the GPU headroom.
 llm:
   temperature: 0.0
   max_tokens: 800
   workers: 10        # build_prediction internal pool
-  concurrency: 96    # global AoaiPool semaphore: 24 docs * late-stage sequential calls + headroom
+  concurrency: 192   # raised from 96 to match llm_doc_concurrency=48 with headroom.
+                     # AoaiPool already retries 429s with backoff, so OR rate limits will
+                     # self-throttle without changing total throughput.
   routing: stable
 
 grobid:

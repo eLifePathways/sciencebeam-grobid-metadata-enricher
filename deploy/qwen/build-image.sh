@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Build a custom GCE image with vLLM + Qwen-7B pre-staged.
+# Build a custom GCE image with vLLM + Qwen3-8B pre-staged.
 # After this runs, on-demand spin-up of qwen-bench-* drops from ~10 min
 # (image pull + HF download + 8x vLLM cold start) to ~2 min (just the 8
 # vLLM cold starts, against an already-warm shared cache on disk).
+#
+# Override the model with `MODEL=...` to bake a different base. Set the
+# model id to match the bench's QWEN_MODEL — mismatch costs the bench an
+# ~15 GB cold HF pull on first boot.
 #
 # Idempotent: re-running creates qwen-bench-vN+1 alongside existing images.
 #
@@ -21,7 +25,7 @@ IMAGE_NAME="${IMAGE_NAME:-qwen-bench-$(date -u +%Y%m%d-%H%M)}"
 IMAGE_FAMILY="${IMAGE_FAMILY:-qwen-bench}"
 SOURCE_IMAGE_FAMILY="${SOURCE_IMAGE_FAMILY:-common-cu129-ubuntu-2204-nvidia-580}"
 SOURCE_IMAGE_PROJECT="${SOURCE_IMAGE_PROJECT:-deeplearning-platform-release}"
-MODEL="${MODEL:-Qwen/Qwen2.5-7B-Instruct}"
+MODEL="${MODEL:-Qwen/Qwen3-8B}"
 VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:latest}"
 
 # We don't need 8 A100s to bake; one is enough to test the nvidia runtime.

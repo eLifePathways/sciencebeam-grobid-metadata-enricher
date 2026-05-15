@@ -21,6 +21,16 @@ ZONE_LIST="${ZONE_LIST:-us-east1-b us-central1-c us-west1-b europe-west4-a us-ce
 MACHINE="${MACHINE:-a2-highgpu-8g}"
 ACCEL="${ACCEL:-type=nvidia-tesla-a100,count=8}"
 MAX_RUN_SECONDS="${MAX_RUN_SECONDS:-7200}"
+# SPOT (default) cycles through zones on stockout; ON_DEMAND skips the spot
+# preemption + cancellation modes for one guaranteed-available run (~$15/hr
+# incremental for a2-highgpu-8g).
+PROVISIONING_MODEL="${PROVISIONING_MODEL:-SPOT}"
+# Hard cap per zone attempt; gcloud waits synchronously on operation
+# completion (STAGING -> RUNNING or failure) which can hang for minutes
+# when GCP is churning. 180s lets a legitimate provision land while
+# bounding the bad case so we cycle through ZONE_LIST in worst-case
+# 180s * len(ZONE_LIST) instead of unbounded.
+PER_ZONE_TIMEOUT="${PER_ZONE_TIMEOUT:-180}"
 
 IMAGE_FAMILY="${IMAGE_FAMILY:-qwen-bench}"
 IMAGE_PROJECT="${IMAGE_PROJECT:-$PROJECT}"
@@ -58,24 +68,55 @@ fi
 if [ -n "${QWEN_MODEL:-}" ]; then
   extra_metadata+=("qwen-model=${QWEN_MODEL}")
 fi
+if [ -n "${VLLM_CACHE_GCS:-}" ]; then
+  extra_metadata+=("vllm-cache-gcs=${VLLM_CACHE_GCS}")
+fi
 metadata_arg=""
 if [ "${#extra_metadata[@]}" -gt 0 ]; then
   metadata_arg="--metadata=$(IFS=,; echo "${extra_metadata[*]}")"
 fi
 
+provisioning_args=()
+case "$PROVISIONING_MODEL" in
+  SPOT)
+    provisioning_args+=(--provisioning-model=SPOT
+                        --instance-termination-action=DELETE
+                        --max-run-duration="${MAX_RUN_SECONDS}s")
+    ;;
+  ON_DEMAND)
+    # No spot flags; gcloud defaults to STANDARD on-demand provisioning.
+    # max-run-duration is incompatible with STANDARD, so drop it too.
+    echo "[create-vm] using ON_DEMAND provisioning (no spot, no preemption)"
+    ;;
+  *)
+    echo "[create-vm] unknown PROVISIONING_MODEL=$PROVISIONING_MODEL" >&2; exit 2
+    ;;
+esac
+# A100 (and every other accelerator-attached VM) cannot live-migrate, so
+# maintenance-policy MUST be TERMINATE. SPOT's --instance-termination-action
+# implicitly forces this; ON_DEMAND defaults to MIGRATE, which gcloud rejects
+# for any GPU-bearing instance ("onHostMaintenance must be TERMINATE").
+provisioning_args+=(--maintenance-policy=TERMINATE)
+# Default compute SA only gets devstorage.read_only, which lets the startup
+# script rsync the LoRA pack FROM GCS but blocks the post-success cache push
+# back UP with GcsApiError. cloud-platform widens the OAuth scopes to cover
+# storage writes (still gated by the SA's IAM perms, which the qwen-bench
+# project pre-grants to the default compute SA).
+provisioning_args+=(--scopes=https://www.googleapis.com/auth/cloud-platform)
+
 last_err=""
 for zone in $ZONE_LIST; do
-  echo "[create-vm] trying $zone..."
+  echo "[create-vm] trying $zone (mode=$PROVISIONING_MODEL, timeout=${PER_ZONE_TIMEOUT}s)..."
   # `gcloud compute instances create` prints both progress text ("Created [...]")
-  # and the --format output to the same stream. Send progress to stderr-captured
-  # buf and keep only the IP on stdout by piping through tail.
-  if out=$(gcloud compute instances create "$NAME" \
+  # and the --format output to the same stream. Wrap in `timeout` so a hung
+  # create operation doesn't burn the whole multi-zone budget. NB: capture
+  # rc explicitly (not via `if cmd; then`) because $? after a failed
+  # `if cmd; then ...; fi` is the if-statement's exit code (always 0).
+  out=$(timeout "${PER_ZONE_TIMEOUT}s" gcloud compute instances create "$NAME" \
     --project="$PROJECT" \
     --zone="$zone" \
     --machine-type="$MACHINE" \
-    --provisioning-model=SPOT \
-    --instance-termination-action=DELETE \
-    --max-run-duration="${MAX_RUN_SECONDS}s" \
+    "${provisioning_args[@]}" \
     --accelerator="$ACCEL" \
     --image-family="$IMAGE_FAMILY" \
     --image-project="$IMAGE_PROJECT" \
@@ -84,7 +125,8 @@ for zone in $ZONE_LIST; do
     --tags=qwen-bench \
     "${metadata_from_file_args[@]}" \
     ${metadata_arg:+"$metadata_arg"} \
-    --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>&1); then
+    --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>&1) && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
     # Strip progress chatter and pick the line that looks like a public IPv4.
     ip=$(echo "$out" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -1)
     if [ -z "$ip" ]; then
@@ -99,6 +141,16 @@ for zone in $ZONE_LIST; do
     exit 0
   fi
   last_err="$out"
+  # rc=124 = our `timeout` killed gcloud (per-zone hard cap exceeded).
+  # Treat that exactly like a stockout. Best-effort fire-and-forget delete
+  # of any half-created VM in this zone so a re-attempt doesn't 409 on
+  # name conflict (the teardown step is also resilient to wrong zones).
+  if [ "$rc" -eq 124 ]; then
+    echo "[create-vm] $zone timed out after ${PER_ZONE_TIMEOUT}s; trying next zone"
+    gcloud compute instances delete "$NAME" --project="$PROJECT" --zone="$zone" \
+      --quiet >/dev/null 2>&1 &
+    continue
+  fi
   # Stockout AND quota-exhausted signals both mean "try elsewhere". Stockout
   # is zone-scoped; quota is region-scoped so the next us-central1 zone won't
   # help, but a region-interleaved ZONE_LIST hops to a fresh region anyway.
@@ -106,9 +158,11 @@ for zone in $ZONE_LIST; do
   # "enough resources", QUOTA_EXCEEDED, "limit exceeded", references to a
   # per-region quota metric like preemptible_nvidia_a100_gpus). Normalize
   # whitespace then case-insensitive grep.
+  # "operation was canceled" appears when GCP preempts a spot create mid-
+  # staging — same intent, try a different zone instead of bailing out.
   norm_err="$(echo "$last_err" | tr -s '\n\t ' ' ')"
   if echo "$norm_err" | grep -qiE \
-      "(stockout|resource_exhausted|resource_availability|enough resources|quota_exceeded|limit exceeded|preemptible_nvidia|nvidia_a100_gpus|does not exist in zone|machine type with name)"; then
+      "(stockout|resource_exhausted|resource_availability|enough resources|quota_exceeded|limit exceeded|preemptible_nvidia|nvidia_a100_gpus|does not exist in zone|machine type with name|operation was canceled)"; then
     echo "[create-vm] capacity/quota/availability issue in $zone; trying next zone"
     continue
   fi
