@@ -1,10 +1,13 @@
 .PHONY: install lint format test serve serve-reload build start stop logs logs-api clean \
         with-langfuse-start with-langfuse-stop with-langfuse-logs with-langfuse-clean \
         with-phoenix-start with-phoenix-stop with-phoenix-logs with-phoenix-clean \
+        with-vllm-download with-vllm-start with-vllm-stop with-vllm-logs with-vllm-clean \
+        with-vllm-phoenix-start with-vllm-phoenix-stop with-vllm-phoenix-logs with-vllm-phoenix-clean \
         benchmark-build benchmark benchmark-train-predict benchmark-train-score benchmark-train \
         sciencebeam-start sciencebeam-stop sciencebeam-patch-figure-model benchmark-cross-parser \
         show-regressions show-improvements \
-        benchmark-train-grobid benchmark-validation-grobid benchmark-train-rescore-grobid
+        benchmark-train-grobid benchmark-validation-grobid benchmark-train-rescore-grobid \
+        benchmark-train-lora benchmark-validation-lora
 
 -include .env
 export
@@ -93,6 +96,8 @@ clean:
 
 
 COMPOSE_LANGFUSE := docker compose -f compose.yml -f compose.langfuse.yml
+COMPOSE_VLLM         := docker compose -f compose.yml -f compose.vllm.yml
+COMPOSE_VLLM_PHOENIX := docker compose -f compose.yml -f compose.phoenix.yml -f compose.vllm.yml
 
 with-langfuse-start:
 	$(COMPOSE_LANGFUSE) up -d --wait
@@ -122,6 +127,38 @@ with-phoenix-logs:
 
 with-phoenix-clean:
 	$(COMPOSE_PHOENIX) down -v
+
+
+with-vllm-download:
+	$(VENV)/bin/hf download elifepathways/Qwen3-8B-ft \
+		--local-dir .local/qwen3-8b-ft
+
+with-vllm-start:
+	$(COMPOSE_VLLM) up -d --wait vllm
+	@echo "vLLM ready at http://localhost:18000 (base: Qwen/Qwen3-8B-AWQ + 7 LoRA adapters)"
+
+with-vllm-stop:
+	$(COMPOSE_VLLM) stop vllm
+
+with-vllm-logs:
+	$(COMPOSE_VLLM) logs -f vllm
+
+with-vllm-clean:
+	$(COMPOSE_VLLM) down -v --remove-orphans
+
+
+with-vllm-phoenix-start:
+	$(COMPOSE_VLLM_PHOENIX) up -d --wait
+	@echo "Ready. API at http://localhost:8000, Phoenix at http://localhost:6006, vLLM at http://localhost:18000"
+
+with-vllm-phoenix-stop:
+	$(COMPOSE_VLLM_PHOENIX) down
+
+with-vllm-phoenix-logs:
+	$(COMPOSE_VLLM_PHOENIX) logs -f
+
+with-vllm-phoenix-clean:
+	$(COMPOSE_VLLM_PHOENIX) down -v
 
 
 grobid-start:
@@ -177,6 +214,21 @@ benchmark-validation-grobid: benchmark-build
 benchmark-train-rescore-grobid:
 	rm -f "benchmarks/runs/train/$(BENCHMARK_RUN)-grobid/per_document.jsonl"
 	$(MAKE) benchmark-train-grobid
+
+
+benchmark-train-lora: benchmark-build
+	$(MAKE) grobid-start
+	$(COMPOSE_VLLM) up -d --wait vllm
+	$(COMPOSE_VLLM) --profile benchmark run --rm \
+		benchmark \
+		python -m benchmarks.predict \
+			--config "$(BENCHMARK_CONFIG)" \
+			--mode   $(BENCHMARK_MODE) \
+			--out    "benchmarks/runs/$(BENCHMARK_SPLIT)/$(BENCHMARK_RUN)-lora"
+	$(MAKE) PARSER=lora BENCHMARK_SPLIT=$(BENCHMARK_SPLIT) .benchmark-score
+
+benchmark-validation-lora: benchmark-build
+	$(MAKE) BENCHMARK_SPLIT=validation benchmark-train-lora
 
 
 benchmark-train-sciencebeam-parser: benchmark-build
