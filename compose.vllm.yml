@@ -50,7 +50,7 @@ services:
       - --max-loras
       - "7"
       - --max-model-len
-      - "8192"
+      - "16384"
       - --gpu-memory-utilization
       - "0.90"
       - --enforce-eager
