@@ -1,0 +1,10 @@
+[
+  {
+    "id": "vllm-0",
+    "endpoint": "http://vllm:8000",
+    "deployment": "Qwen/Qwen3-8B-AWQ",
+    "apiKey": "local",
+    "apiVersion": "unused",
+    "kind": "openai"
+  }
+]

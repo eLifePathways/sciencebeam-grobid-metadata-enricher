@@ -18,6 +18,7 @@ from .clients import (
     DEFAULT_PARSER,
     DEFAULT_PDFALTO_BIN,
     DEFAULT_POOL_PATH,
+    PREFER_AOAI_POOL,
     AoaiPool,
     OpenAIClient,
     run_grobid,
@@ -50,16 +51,16 @@ _parser: str = DEFAULT_PARSER
 
 
 def _make_chat() -> Optional[Callable[..., str]]:
+    if PREFER_AOAI_POOL and DEFAULT_POOL_PATH.exists():
+        return AoaiPool(DEFAULT_POOL_PATH).chat
     if DEFAULT_OPENAI_API_KEY and DEFAULT_OPENAI_MODEL:
-        openai_client = OpenAIClient(
+        return OpenAIClient(
             api_key=DEFAULT_OPENAI_API_KEY,
             model=DEFAULT_OPENAI_MODEL,
             base_url=DEFAULT_OPENAI_BASE_URL,
-        )
-        return openai_client.chat
+        ).chat
     if DEFAULT_POOL_PATH.exists():
-        aoai_client = AoaiPool(DEFAULT_POOL_PATH)
-        return aoai_client.chat
+        return AoaiPool(DEFAULT_POOL_PATH).chat
     return None
 
 

@@ -20,6 +20,7 @@ from grobid_metadata_enricher.clients import (
     DEFAULT_PARSER,
     DEFAULT_PARSER_URLS,
     PARSER_GROBID,
+    PREFER_AOAI_POOL,
     SUPPORTED_PARSERS,
     AoaiPool,
     ContentFilterError,
@@ -373,7 +374,7 @@ def main() -> None:
     print(f"Manifest: {len(manifest)} records across {len(cfg['corpora'])} corpora", flush=True)
 
     client: Union[AoaiPool, OpenAIClient]
-    if DEFAULT_OPENAI_API_KEY and DEFAULT_OPENAI_MODEL:
+    if not PREFER_AOAI_POOL and DEFAULT_OPENAI_API_KEY and DEFAULT_OPENAI_MODEL:
         client = OpenAIClient(
             api_key=DEFAULT_OPENAI_API_KEY,
             model=DEFAULT_OPENAI_MODEL,

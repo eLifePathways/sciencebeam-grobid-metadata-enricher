@@ -17,6 +17,7 @@ import httpx
 from .telemetry import get_tracer
 
 DEFAULT_POOL_PATH = Path(os.getenv("AOAI_POOL_PATH", "aoai_pool.json"))
+PREFER_AOAI_POOL = os.getenv("PREFER_AOAI_POOL", "").lower() in {"1", "true", "yes"}
 DEFAULT_GROBID_TIMEOUT = int(os.getenv("GROBID_TIMEOUT", "60"))
 DEFAULT_PDFALTO_BIN = Path(os.getenv("PDFALTO_BIN", "pdfalto"))
 # Upstream PDF parser: "grobid" (default, lfoppiano/grobid:0.9.0-crf compatible)
@@ -194,6 +195,11 @@ class AoaiPool:
         self.chat_template_kwargs: Dict[str, Any] = (
             json.loads(raw_kwargs) if raw_kwargs else {}
         )
+        # Optional extra token budget added to every request. Set
+        # LLM_EXTRA_MAX_TOKENS when using LoRA adapters that generate
+        # thinking chains despite `enable_thinking=false` — the extra
+        # tokens absorb the chain; _strip_thinking_chain removes it.
+        self.extra_max_tokens: int = int(os.getenv("LLM_EXTRA_MAX_TOKENS", "0"))
         self._index = 0
         self._lock = threading.Lock()
 
@@ -236,9 +242,10 @@ class AoaiPool:
             for attempt in range(max_attempts):
                 backend = self.backend_for_request(messages, step_name=step_name, attempt=attempt)
                 model_override = self.step_lora_map.get(step_name) if step_name else None
+                effective_max_tokens = max_tokens + self.extra_max_tokens
                 url, headers, payload = _build_chat_request(
                     backend, messages,
-                    temperature=temperature, max_tokens=max_tokens,
+                    temperature=temperature, max_tokens=effective_max_tokens,
                     model_override=model_override,
                     chat_template_kwargs=self.chat_template_kwargs or None,
                 )
@@ -251,7 +258,7 @@ class AoaiPool:
                 try:
                     with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                         body = json.loads(response.read().decode("utf-8"))
-                    content = _extract_chat_content(body)
+                    content = _strip_thinking_chain(_extract_chat_content(body))
                     usage = _extract_usage(body)
                     span.set_attribute("llm.model_name", model_override or backend.deployment)
                     span.set_attribute("output.value", content)
@@ -402,6 +409,16 @@ def _extract_chat_content(payload: Dict[str, Any]) -> str:
                 parts.append(str(item.get("text", "")))
         return "".join(parts)
     return str(content)
+
+
+_THINK_CLOSE_TAG = "</think>"
+
+
+def _strip_thinking_chain(content: str) -> str:
+    idx = content.find(_THINK_CLOSE_TAG)
+    if idx == -1:
+        return content
+    return content[idx + len(_THINK_CLOSE_TAG):].lstrip("\n")
 
 
 def _extract_usage(payload: Dict[str, Any]) -> Dict[str, int]:

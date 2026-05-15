@@ -1,0 +1,95 @@
+# Local vLLM service: Qwen3-8B-AWQ base + 7 per-stage LoRA adapters.
+# Wires up the api and benchmark services to use it automatically.
+#
+# Prerequisites:
+#   make with-vllm-download   # adapter pack → .local/qwen3-8b-ft (~1.3 GB)
+#
+# API only:
+#   make with-vllm-start      # first run downloads ~4.5 GB model, allow ~10 min
+#
+# API + Phoenix observability:
+#   make with-vllm-phoenix-start
+#
+# Benchmarks:
+#   make benchmark-train-lora
+#   make benchmark-validation-lora
+
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    ports:
+      - "18000:8000"
+    volumes:
+      - ./.local/qwen3-8b-ft:/lora:ro
+      - vllm-hf-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+    command:
+      - --model
+      - Qwen/Qwen3-8B-AWQ
+      - --quantization
+      - awq
+      - --enable-lora
+      - --lora-modules
+      - header_metadata=/lora/header_metadata
+      - body_sections=/lora/body_sections
+      - references=/lora/references
+      - figure_captions=/lora/figure_captions
+      - table_captions=/lora/table_captions
+      - keywords=/lora/keywords
+      - identifiers=/lora/identifiers
+      - --max-lora-rank
+      - "16"
+      - --max-loras
+      - "7"
+      - --max-model-len
+      - "16384"
+      - --gpu-memory-utilization
+      - "0.90"
+      - --enforce-eager
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 90
+      start_period: 600s
+
+  # Route the API service through local vLLM via AoaiPool with per-step LoRA
+  # routing. AOAI_POOL_PATH being set is enough to select AoaiPool over
+  # OpenAIClient regardless of any OPENAI_API_KEY in .env.
+  api:
+    volumes:
+      - ./runtime:/app/runtime
+    environment:
+      PREFER_AOAI_POOL: "true"
+      AOAI_POOL_PATH: /app/runtime/local_vllm_pool.json
+      STEP_LORA_MAP_JSON: '{"HEADER_METADATA":"header_metadata","TEI_METADATA":"header_metadata","TEI_VALIDATED":"header_metadata","CONTENT_BODY_SECTIONS":"body_sections","CONTENT_REFERENCES":"references","CONTENT_FIGURE_CAPTIONS":"figure_captions","CONTENT_TABLE_CAPTIONS":"table_captions","KEYWORD_TRANSLATE":"keywords","KEYWORD_SELECT":"keywords","KEYWORD_EXTRACT":"keywords","KEYWORD_INFER":"keywords","IDENTIFIER_SELECT":"identifiers"}'
+      LLM_CHAT_TEMPLATE_KWARGS_JSON: '{"enable_thinking": false}'
+      LLM_EXTRA_MAX_TOKENS: "2000"
+    depends_on:
+      vllm:
+        condition: service_healthy
+
+  # Route benchmark LLM calls through local vLLM with per-step LoRA routing.
+  # AOAI_POOL_PATH being set is enough to select AoaiPool over OpenAIClient
+  # regardless of any OPENAI_API_KEY in .env.
+  benchmark:
+    environment:
+      PREFER_AOAI_POOL: "true"
+      AOAI_POOL_PATH: /app/runtime/local_vllm_pool.json
+      STEP_LORA_MAP_JSON: '{"HEADER_METADATA":"header_metadata","TEI_METADATA":"header_metadata","TEI_VALIDATED":"header_metadata","CONTENT_BODY_SECTIONS":"body_sections","CONTENT_REFERENCES":"references","CONTENT_FIGURE_CAPTIONS":"figure_captions","CONTENT_TABLE_CAPTIONS":"table_captions","KEYWORD_TRANSLATE":"keywords","KEYWORD_SELECT":"keywords","KEYWORD_EXTRACT":"keywords","KEYWORD_INFER":"keywords","IDENTIFIER_SELECT":"identifiers"}'
+      LLM_CHAT_TEMPLATE_KWARGS_JSON: '{"enable_thinking": false}'
+      LLM_EXTRA_MAX_TOKENS: "2000"
+    depends_on:
+      vllm:
+        condition: service_healthy
+
+volumes:
+  vllm-hf-cache:

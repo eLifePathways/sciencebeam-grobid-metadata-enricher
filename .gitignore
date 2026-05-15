@@ -11,3 +11,6 @@ __pycache__/
 benchmarks/runs/
 benchmarks/.hf_cache/
 benchmarks/data
+
+# Local-only downloads (models, adapters)
+.local/
